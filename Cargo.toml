@@ -1,0 +1,19 @@
+[package]
+name = "ccfarm"
+version = "0.1.0"
+edition = "2021"
+description = "Orchestrator for Claude Code sessions on top of tmux"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+fs2 = "0.4"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+

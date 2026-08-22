@@ -1,0 +1,14 @@
+# Copy to ~/.config/ccfarm/sessions.toml
+tmux_session = "cc"
+remote_control_watch = true
+
+[[session]]
+path = "~/projects/api"
+name = "refactor-auth"
+
+[[session]]
+path = "~/projects/api"
+name = "bug-webhooks"
+
+[[session]]
+path = "~/web"
