@@ -178,11 +178,14 @@ fn up(file: Option<&std::path::Path>) -> Result<()> {
     }
     drop(lock);
 
-    let windows: Vec<String> = sessions.iter().map(|s| s.window.clone()).collect();
+    let tabs: Vec<ui::Tab> = sessions
+        .iter()
+        .map(|s| ui::Tab { title: s.name.clone(), window: s.window.clone() })
+        .collect();
     if ui::mode() == ui::Mode::Gui {
         match ui::detect_terminal() {
             Some(term) => {
-                ui::open_tabs(&term, &windows);
+                ui::open_tabs(&term, &tabs);
                 println!("Sessions running in tmux '{}'. From elsewhere: ccfarm attach", session);
                 return Ok(());
             }
@@ -204,7 +207,8 @@ fn attach(name: Option<&str>) -> Result<()> {
         let w = config::sanitize_window(n);
         if ui::mode() == ui::Mode::Gui {
             if let Some(term) = ui::detect_terminal() {
-                ui::open_tabs(&term, &[w]);
+                let tab = ui::Tab { title: n.to_string(), window: w.clone() };
+                ui::open_tabs(&term, &[tab]);
                 return Ok(());
             }
         }

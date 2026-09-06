@@ -55,6 +55,15 @@ path = "~/web"          # no "name": the folder name is used
 Several sessions per folder, each with its own name. The name is the
 identifier the conversation is resumed with, so it must be unique.
 
+The name is free text: spaces and international characters are fine
+(`"Cuéntamo"`, `"Cool Candle & Co"`), and that is what the terminal tab
+shows. Internally each session also gets a sanitized ASCII **window name** —
+the identifier tmux and the `view` subcommand use — where anything outside
+`[A-Za-z0-9_-]` becomes `_` and the result is capped at 40 characters. So two
+names that differ only in punctuation can collide on the same window; ccfarm
+warns and skips the repeat when they do. `ccfarm list` and `ccfarm attach
+<name>` take the real name.
+
 ## How it works
 
 Claude processes **always** live inside tmux. The interface depends on where
@@ -147,10 +156,15 @@ session, so as not to steal it back.
 
 ## Known limitations
 
-- gnome-terminal adds the tab to the most recently focused window; there is a
-  400 ms pause between openings, but if you switch windows during the process
-  some tab may end up where it should not. With kitty, `kitty @ launch` is
-  used, which is deterministic.
+- konsole and xfce4-terminal add each tab to the most recently focused
+  window; there is a 400 ms pause between openings, but if you switch windows
+  during the process some tab may end up where it should not. gnome-terminal
+  and kitty are deterministic: gnome-terminal builds the whole window in a
+  single invocation (one `--window` group plus one `--tab` group per session),
+  and kitty uses `kitty @ launch`. A caveat for gnome-terminal: because a
+  window is built in one shot, re-running `up` after some tabs are already
+  open puts the *newly added* sessions in a second window — CLI gnome-terminal
+  cannot inject a tab into a specific pre-existing window.
 - If a session name turns out to be ambiguous, `claude --resume` opens the
   interactive picker and that window sits waiting for you to press Esc.
 - Remote Control failure detection is textual, as explained above.
