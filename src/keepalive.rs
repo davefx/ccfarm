@@ -49,7 +49,7 @@ fn shell() -> ! {
     std::process::exit(1);
 }
 
-pub fn run(dir: &Path, name: &str) -> Result<()> {
+pub fn run(dir: &Path, name: &str, model: Option<&str>) -> Result<()> {
     std::env::set_current_dir(dir)?;
     std::fs::create_dir_all(paths::state_dir()).ok();
 
@@ -63,11 +63,18 @@ pub fn run(dir: &Path, name: &str) -> Result<()> {
 
     loop {
         let resume = marker.exists();
-        let args: Vec<String> = if resume {
+        let mut args: Vec<String> = if resume {
             vec!["--resume".into(), name.into()]
         } else {
             vec!["-n".into(), name.into()]
         };
+        // Passed through untouched: `claude --model` takes an alias ("opus")
+        // or a full id ("claude-opus-4-8"), and which names are valid is for
+        // Claude Code to decide. Absent means Claude Code picks its default.
+        if let Some(m) = model {
+            args.push("--model".into());
+            args.push(m.into());
+        }
 
         let start = Instant::now();
         let rc = match Command::new("claude").args(&args).spawn() {

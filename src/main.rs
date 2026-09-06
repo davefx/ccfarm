@@ -66,7 +66,12 @@ enum Cmd {
     View { window: String },
     /// (internal) Loop that keeps a session alive
     #[command(hide = true)]
-    Keepalive { dir: PathBuf, name: String },
+    Keepalive {
+        dir: PathBuf,
+        name: String,
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// (internal) Remote Control watcher
     #[command(hide = true)]
     Rcwatch,
@@ -101,7 +106,7 @@ fn execute(cmd: Cmd) -> Result<()> {
         Cmd::AgentInstall => agent::install(),
         Cmd::AgentUninstall => agent::uninstall(),
         Cmd::View { window } => view(&window),
-        Cmd::Keepalive { dir, name } => keepalive::run(&dir, &name),
+        Cmd::Keepalive { dir, name, model } => keepalive::run(&dir, &name, model.as_deref()),
         Cmd::Rcwatch => {
             rcwatch::run(&tmux_session());
             Ok(())
@@ -155,7 +160,13 @@ fn up(file: Option<&std::path::Path>) -> Result<()> {
         if existing.contains(&s.window) {
             continue; // already running: left alone
         }
-        let command = self_command(&["keepalive", &s.dir.to_string_lossy(), &s.name]);
+        let dir = s.dir.to_string_lossy();
+        let mut kargs: Vec<&str> = vec!["keepalive", &dir, &s.name];
+        if let Some(m) = &s.model {
+            kargs.push("--model");
+            kargs.push(m);
+        }
+        let command = self_command(&kargs);
         if fresh {
             tmux::new_session_detached(&session, &s.window, &s.dir, &command)?;
             fresh = false;
@@ -362,8 +373,16 @@ fn doctor() -> Result<()> {
     match Config::load(None) {
         Ok(c) => {
             println!("  tmux: {}", c.tmux_session);
+            println!(
+                "  model: {}",
+                c.model.as_deref().unwrap_or("<Claude Code's default>")
+            );
             for s in c.resolve() {
-                println!("  - {:<24} {}", s.name, s.dir.display());
+                let model = match &s.model {
+                    Some(m) => format!("  [{}]", m),
+                    None => String::new(),
+                };
+                println!("  - {:<24} {}{}", s.name, s.dir.display(), model);
             }
         }
         Err(e) => println!("{} {}", ko, e),

@@ -39,6 +39,7 @@ Only `up` accepts `-f`; every other command uses the default file.
 ```toml
 tmux_session = "cc"
 remote_control_watch = true
+model = "claude-opus-4-8"   # default model, optional
 
 [[session]]
 path = "~/projects/api"
@@ -47,6 +48,7 @@ name = "refactor-auth"
 [[session]]
 path = "~/projects/api"
 name = "bug-webhooks"
+model = "sonnet"        # overrides the default above
 
 [[session]]
 path = "~/web"          # no "name": the folder name is used
@@ -63,6 +65,42 @@ the identifier tmux and the `view` subcommand use — where anything outside
 names that differ only in punctuation can collide on the same window; ccfarm
 warns and skips the repeat when they do. `ccfarm list` and `ccfarm attach
 <name>` take the real name.
+
+### Models
+
+`model` is passed straight to `claude --model`, which takes an alias for the
+latest of a family (`opus`, `sonnet`, `fable`), a full id (`claude-opus-4-8`,
+`claude-sonnet-5`), or a full id with a **`[1m]` suffix** for the 1M-token
+context window (`claude-opus-4-8[1m]`, `claude-sonnet-5[1m]`). ccfarm does not
+check the value: which names are valid is Claude Code's business, and
+hardcoding a list here would only go stale.
+
+The square brackets are safe. Every argument ccfarm hands to tmux is
+single-quoted, so `[1m]` reaches `claude` as written instead of being eaten by
+shell globbing.
+
+Three levels, most specific first:
+
+| Where | Scope |
+| --- | --- |
+| `model` inside a `[[session]]` | that session |
+| `CCFARM_MODEL` | the file default, for this run |
+| `model` at the top of the file | every session without its own |
+
+A session that ends up with no model at any level is started without the
+flag, so Claude Code picks its own default. `CCFARM_MODEL` replaces the file
+default rather than forcing every window: a session that names its own model
+keeps it, because pinning one is a deliberate act.
+
+The model applies to `claude -n` and `claude --resume` alike, so changing it
+in the file and restarting the window moves an existing conversation onto
+another model.
+
+**The model is fixed when the window is created.** `ccfarm up` bakes
+`--model` into the command tmux runs, and the restart loop reuses it for the
+life of the window. Editing the file does not reach a session that is already
+running: close it (`ccfarm stop <name>`, or `ccfarm kill` for all) and bring
+it back up.
 
 ## How it works
 
@@ -148,6 +186,7 @@ session, so as not to steal it back.
 | --- | --- |
 | `CCFARM_CONF` | Sessions file |
 | `CCFARM_SESSION` | Name of the tmux session |
+| `CCFARM_MODEL` | Default model, overriding the file's |
 | `CCFARM_UI` | `tmux` or `gui` |
 | `CCFARM_TERM` | Preferred terminal emulator |
 | `CCFARM_AGENT_SOCK` | ssh-agent socket to prefer over the probed ones |

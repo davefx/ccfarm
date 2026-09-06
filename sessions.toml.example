@@ -2,6 +2,11 @@
 tmux_session = "cc"
 remote_control_watch = true
 
+# Default model for every session. An alias ("opus", "sonnet", "fable"), a full
+# id ("claude-opus-4-8"), or a full id with "[1m]" for the 1M-token context
+# window. Omit it to let Claude Code pick its own.
+model = "claude-opus-4-8[1m]"
+
 [[session]]
 path = "~/projects/api"
 name = "refactor-auth"
@@ -9,6 +14,7 @@ name = "refactor-auth"
 [[session]]
 path = "~/projects/api"
 name = "bug-webhooks"
+model = "sonnet"        # overrides the default above
 
 [[session]]
 path = "~/web"

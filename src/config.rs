@@ -7,6 +7,7 @@ pub const TEMPLATE: &str = r#"# Claude Code sessions orchestrated by ccfarm.
 #
 # tmux_session = "cc"        # name of the tmux session (optional)
 # remote_control_watch = true
+# model = "opus"             # default model for every session (optional)
 
 [[session]]
 path = "~/projects/api"
@@ -15,10 +16,12 @@ name = "refactor-auth"
 [[session]]
 path = "~/projects/api"
 name = "bug-webhooks"
+model = "claude-opus-4-8"    # overrides the default above
 
 [[session]]
 path = "~/web"
 # no "name": the folder name is used
+# no "model": the default above, or Claude Code's own if there is none
 "#;
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +30,12 @@ pub struct Config {
     pub tmux_session: String,
     #[serde(default = "default_true")]
     pub remote_control_watch: bool,
+    /// Default model for every session that does not name its own.
+    /// Passed to `claude --model` verbatim: an alias ("opus", "sonnet") or a
+    /// full id ("claude-opus-4-8"). Not validated here — the list of valid
+    /// names belongs to Claude Code, not to ccfarm.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default, rename = "session")]
     pub sessions: Vec<SessionCfg>,
 }
@@ -42,6 +51,8 @@ fn default_true() -> bool {
 pub struct SessionCfg {
     pub path: String,
     pub name: Option<String>,
+    /// Overrides the top-level `model` for this session alone.
+    pub model: Option<String>,
 }
 
 /// A resolved session: absolute folder, name and tmux window.
@@ -50,6 +61,8 @@ pub struct Session {
     pub dir: PathBuf,
     pub name: String,
     pub window: String,
+    /// Already resolved: session override, else the file default, else None.
+    pub model: Option<String>,
 }
 
 impl Config {
@@ -75,6 +88,9 @@ impl Config {
 
         if let Ok(s) = std::env::var("CCFARM_SESSION") {
             cfg.tmux_session = s;
+        }
+        if let Ok(m) = std::env::var("CCFARM_MODEL") {
+            cfg.model = Some(m);
         }
         if cfg.sessions.is_empty() {
             bail!("no session is defined in {}", path.display());
@@ -105,7 +121,8 @@ impl Config {
                 eprintln!("Warning: duplicated name '{}', skipping the repeat.", name);
                 continue;
             }
-            out.push(Session { dir, name, window });
+            let model = s.model.clone().or_else(|| self.model.clone());
+            out.push(Session { dir, name, window, model });
         }
         out
     }
