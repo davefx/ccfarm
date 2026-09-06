@@ -27,7 +27,8 @@ cargo resolve freely.
 | `ccfarm kill` | Closes everything |
 | `ccfarm edit` | Opens the file in `$EDITOR` |
 | `ccfarm doctor` | Full diagnostics |
-| `ccfarm agent-install` | Installs the persistent ssh-agent |
+| `ccfarm agent-install` | Adopts a persistent ssh-agent, installing one only if needed |
+| `ccfarm agent-uninstall` | Undoes `agent-install` |
 
 Only `up` accepts `-f`; every other command uses the default file.
 
@@ -82,13 +83,42 @@ outright — purged transcript, ambiguous name — a new session is created.
 
 ### ssh-agent
 
-The persistent agent at `$XDG_RUNTIME_DIR/ssh-agent.socket` is **always**
-preferred, because it is the only one visible both from the graphical
-session and from an incoming SSH connection. The socket forwarded over SSH
-is only used as a last resort, with a warning: it dies when that connection
-hangs up. `ccfarm agent-install` creates the systemd user service, enables
-`linger`, exports the variable in `.bashrc`/`.profile` and adds
-`AddKeysToAgent yes`.
+A *persistent* agent is *always* preferred, because it is the only one
+visible both from the graphical session and from an incoming SSH connection.
+The socket forwarded over SSH is only used as a last resort, with a warning:
+it dies when that connection hangs up.
+
+Persistent means any of the socket-activated agents a current distro already
+ships, probed in this order:
+
+| Socket | Agent |
+| --- | --- |
+| `$CCFARM_AGENT_SOCK` | whatever you point it at |
+| `$XDG_RUNTIME_DIR/gcr/ssh` | gnome-keyring (`gcr-ssh-agent.socket`) |
+| `$XDG_RUNTIME_DIR/keyring/ssh` | gnome-keyring, older layout |
+| `$XDG_RUNTIME_DIR/openssh_agent` | OpenSSH (`ssh-agent.socket`) |
+| `$XDG_RUNTIME_DIR/ccfarm-ssh-agent.socket` | ccfarm's own |
+| `$XDG_RUNTIME_DIR/gnupg/S.gpg-agent.ssh` | gpg-agent ssh emulation |
+
+One that holds keys beats one that merely answers, so on a desktop running
+several at once ccfarm lands on the one actually carrying the identities.
+
+**`ccfarm agent-install` changes nothing when it finds one of these** — it
+just reports it. Only when there is no persistent agent at all does it
+install its own: a `ccfarm-ssh-agent.service` user unit, `linger`, a guarded
+line in `.bashrc`/`.profile` and `AddKeysToAgent yes`.
+
+The unit is deliberately *not* called `ssh-agent.service`. A file with that
+name under `~/.config/systemd/user` shadows the distro unit of the same name
+and breaks its socket activation. The shell line is guarded too: it only
+sets `SSH_AUTH_SOCK` when the socket really exists and the variable is not
+already pointing at a working agent — exporting a dead socket path breaks
+`ssh` for the whole shell.
+
+`ccfarm agent-uninstall` reverses all of that. It only ever touches what
+ccfarm itself wrote, so it cannot damage a system-provided agent. Undoing
+`linger` needs root (`sudo loginctl disable-linger $USER`) and is left to
+you.
 
 ### Remote Control
 
@@ -111,6 +141,7 @@ session, so as not to steal it back.
 | `CCFARM_SESSION` | Name of the tmux session |
 | `CCFARM_UI` | `tmux` or `gui` |
 | `CCFARM_TERM` | Preferred terminal emulator |
+| `CCFARM_AGENT_SOCK` | ssh-agent socket to prefer over the probed ones |
 | `CCFARM_RC_INTERVAL` | Seconds between watcher checks (90) |
 | `CCFARM_RC_COOLDOWN` | Minimum wait between retries per pane (300) |
 

@@ -10,9 +10,32 @@ pub fn runtime_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
 }
 
-/// Socket of the persistent agent (systemd user service).
-pub fn agent_fixed() -> PathBuf {
-    runtime_dir().join("ssh-agent.socket")
+/// Socket of ccfarm's own agent, installed only when the system provides
+/// none. Not named `ssh-agent.socket`: see UNIT_NAME in agent.rs.
+pub fn agent_own() -> PathBuf {
+    runtime_dir().join("ccfarm-ssh-agent.socket")
+}
+
+/// Known persistent agent sockets, best first.
+///
+/// All of these are socket-activated systemd user units on current distros,
+/// so they outlive the graphical session and are reachable from an incoming
+/// SSH connection alike — which is all ccfarm asks of an agent. Probing for
+/// them is what keeps ccfarm from installing a second agent on top of a
+/// perfectly good one.
+pub fn agent_candidates() -> Vec<PathBuf> {
+    let rt = runtime_dir();
+    let mut v = Vec::new();
+    if let Ok(s) = std::env::var("CCFARM_AGENT_SOCK") {
+        v.push(PathBuf::from(s));
+    }
+    v.push(rt.join("gcr/ssh")); // gnome-keyring, gcr-ssh-agent.socket
+    v.push(rt.join("keyring/ssh")); // gnome-keyring, older layout
+    v.push(rt.join("openssh_agent")); // OpenSSH, ssh-agent.socket
+    v.push(agent_own()); // ours
+    v.push(rt.join("ssh-agent.socket")); // ours, name used before 0.2
+    v.push(rt.join("gnupg/S.gpg-agent.ssh")); // gpg-agent ssh emulation
+    v
 }
 
 /// Stable link that every tmux session sees.

@@ -59,6 +59,8 @@ enum Cmd {
     Doctor,
     /// Install the persistent ssh-agent as a user service
     AgentInstall,
+    /// Undo agent-install (only ever touches what ccfarm itself wrote)
+    AgentUninstall,
     /// (internal) View of one window, used by the tabs
     #[command(hide = true)]
     View { window: String },
@@ -97,6 +99,7 @@ fn execute(cmd: Cmd) -> Result<()> {
         Cmd::Edit => edit(),
         Cmd::Doctor => doctor(),
         Cmd::AgentInstall => agent::install(),
+        Cmd::AgentUninstall => agent::uninstall(),
         Cmd::View { window } => view(&window),
         Cmd::Keepalive { dir, name } => keepalive::run(&dir, &name),
         Cmd::Rcwatch => {
@@ -308,11 +311,9 @@ fn doctor() -> Result<()> {
         "  SSH_AUTH_SOCK={}",
         std::env::var("SSH_AUTH_SOCK").unwrap_or_else(|_| "<empty>".into())
     );
-    let fixed = paths::agent_fixed();
-    if agent::alive(&fixed) {
-        println!("{} persistent agent at {}", ok, fixed.display());
-    } else {
-        println!("{} no persistent agent — run 'ccfarm agent-install'", ko);
+    match agent::best_persistent() {
+        Some(f) => println!("{} persistent agent at {}", ok, f.display()),
+        None => println!("{} no persistent agent — run 'ccfarm agent-install'", ko),
     }
     match agent::resolve() {
         Some(r) => {
