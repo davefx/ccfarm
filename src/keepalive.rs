@@ -77,7 +77,13 @@ pub fn run(dir: &Path, name: &str, model: Option<&str>) -> Result<()> {
         }
 
         let start = Instant::now();
-        let rc = match Command::new("claude").args(&args).spawn() {
+        // Force session persistence on every start and restart, so Remote
+        // Control can always reconnect to the session ccfarm keeps alive.
+        let rc = match Command::new("claude")
+            .args(&args)
+            .env("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE", "1")
+            .spawn()
+        {
             Err(e) => {
                 eprintln!("[ccfarm] could not run 'claude': {}", e);
                 -1

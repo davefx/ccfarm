@@ -173,6 +173,12 @@ Set `"remoteControlAtStartup": true` in `~/.claude/settings.json`: it applies
 to new and resumed sessions alike. `ccfarm doctor` checks it, along with the
 environment variables that prevent it.
 
+Every session ccfarm starts or restarts is launched with
+`CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`, so the session stays persistent and
+Remote Control can always reconnect to it. This is unconditional; it does not
+depend on `remote_control_watch`. Sessions already running when you upgrade
+pick it up on their next restart (or run `ccfarm kill && ccfarm up`).
+
 The `rc-watch` watcher reactivates Remote Control when it detects a failure.
 **It is a heuristic**: Claude Code does not publish that state in a way that
 is readable from outside, so the pane text is read with `capture-pane`. If
