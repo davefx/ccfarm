@@ -61,35 +61,6 @@ pub fn windows(session: &str) -> Vec<String> {
     .unwrap_or_default()
 }
 
-pub struct WindowInfo {
-    pub name: String,
-    pub command: String,
-    pub path: String,
-}
-
-pub fn window_info(session: &str) -> Vec<WindowInfo> {
-    run(&[
-        "list-windows",
-        "-t",
-        &format!("={}", session),
-        "-F",
-        "#{window_name}|#{pane_current_command}|#{pane_current_path}",
-    ])
-    .map(|s| {
-        s.lines()
-            .filter_map(|l| {
-                let mut it = l.splitn(3, '|');
-                Some(WindowInfo {
-                    name: it.next()?.into(),
-                    command: it.next().unwrap_or("").into(),
-                    path: it.next().unwrap_or("").into(),
-                })
-            })
-            .collect()
-    })
-    .unwrap_or_default()
-}
-
 pub struct PaneInfo {
     pub id: String,
     pub command: String,
@@ -116,6 +87,67 @@ pub fn panes(session: &str) -> Vec<PaneInfo> {
             .collect()
     })
     .unwrap_or_default()
+}
+
+/// One window of the farm (they all have a single pane).
+#[derive(Clone)]
+pub struct Pane {
+    pub window_id: String,
+    pub window_name: String,
+    pub pid: u32,
+    pub start_command: String,
+}
+
+pub fn panes_full(session: &str) -> Vec<Pane> {
+    run(&[
+        "list-panes",
+        "-s",
+        "-t",
+        &format!("={}", session),
+        "-F",
+        "#{window_id}|#{window_name}|#{pane_pid}|#{pane_start_command}",
+    ])
+    .map(|s| {
+        s.lines()
+            .filter_map(|l| {
+                let mut it = l.splitn(4, '|');
+                Some(Pane {
+                    window_id: it.next()?.into(),
+                    window_name: it.next()?.into(),
+                    pid: it.next()?.parse().ok()?,
+                    start_command: it.next().unwrap_or("").into(),
+                })
+            })
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Types `text` as is (no key names) into `target`.
+pub fn send_literal(target: &str, text: &str) -> Result<()> {
+    run(&["send-keys", "-t", target, "-l", text]).map(|_| ())
+}
+
+pub fn send_enter(target: &str) -> Result<()> {
+    run(&["send-keys", "-t", target, "Enter"]).map(|_| ())
+}
+
+/// Runs a shell command from the tmux server, detached from any pane.
+pub fn run_background(cmd: &str) -> Result<()> {
+    run(&["run-shell", "-b", cmd]).map(|_| ())
+}
+
+/// Replaces whatever runs in `target` with `cmd`, killing it first.
+pub fn respawn_pane(target: &str, cmd: &str) -> Result<()> {
+    run(&["respawn-pane", "-k", "-t", target, cmd]).map(|_| ())
+}
+
+/// Window id of the tmux pane this process runs in, if any. tmux exports
+/// TMUX_PANE to everything a pane starts, Claude's tool calls included.
+pub fn caller_window() -> Option<String> {
+    let pane = std::env::var("TMUX_PANE").ok()?;
+    let out = run(&["display-message", "-p", "-t", &pane, "#{window_id}"]).ok()?;
+    Some(out.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 pub fn capture_pane(pane: &str, lines: u32) -> Option<String> {

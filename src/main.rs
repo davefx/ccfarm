@@ -10,6 +10,7 @@ mod config;
 mod keepalive;
 mod paths;
 mod rcwatch;
+mod suspend;
 mod tmux;
 mod transcripts;
 mod ui;
@@ -52,6 +53,25 @@ enum Cmd {
     List,
     /// Close a session and its restart loop
     Stop { name: String },
+    /// Free a session's memory: close its claude, keep the conversation
+    Suspend {
+        /// Sessions to suspend
+        names: Vec<String>,
+        /// Every idle session (never the one running this command)
+        #[arg(long)]
+        idle: bool,
+        /// Suspend busy sessions too, interrupting what they are doing
+        #[arg(long)]
+        force: bool,
+    },
+    /// Bring suspended sessions back, resuming their conversation
+    Restore {
+        /// Sessions to restore
+        names: Vec<String>,
+        /// Every suspended session
+        #[arg(long)]
+        all: bool,
+    },
     /// Close everything
     Kill,
     /// Open the sessions file in $EDITOR
@@ -73,6 +93,17 @@ enum Cmd {
         #[arg(long)]
         model: Option<String>,
     },
+    /// Give a session an order, waking it up first if it is suspended
+    Send { name: String, text: String },
+    /// (internal) Types an order into a window once Claude Code is ready
+    #[command(hide = true)]
+    Deliver { target: String, text: String },
+    /// (internal) Waiting screen of a suspended session
+    #[command(hide = true)]
+    Parked { name: String },
+    /// (internal) Automatic suspension under memory pressure
+    #[command(hide = true)]
+    Memwatch,
     /// (internal) Remote Control watcher
     #[command(hide = true)]
     Rcwatch,
@@ -99,8 +130,14 @@ fn execute(cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Up { file } => up(file.as_deref()),
         Cmd::Attach { name } => attach(name.as_deref()),
-        Cmd::List => list(),
+        Cmd::List => suspend::list(),
         Cmd::Stop { name } => stop(&name),
+        Cmd::Suspend { names, idle, force } => suspend::suspend(&names, idle, force),
+        Cmd::Restore { names, all } => suspend::restore(&names, all),
+        Cmd::Parked { name } => suspend::parked(&name),
+        Cmd::Memwatch => suspend::memwatch(),
+        Cmd::Send { name, text } => suspend::send(&name, &text),
+        Cmd::Deliver { target, text } => suspend::deliver(&target, &text),
         Cmd::Kill => kill(),
         Cmd::Edit => edit(),
         Cmd::Doctor => doctor(),
@@ -121,6 +158,17 @@ fn self_command(args: &[&str]) -> String {
     let mut parts = vec![shell_quote(&exe.to_string_lossy())];
     parts.extend(args.iter().map(|a| shell_quote(a)));
     parts.join(" ")
+}
+
+/// What a session's window runs: the restart loop, with its model.
+fn keepalive_command(s: &Session) -> String {
+    let dir = s.dir.to_string_lossy();
+    let mut kargs: Vec<&str> = vec!["keepalive", &dir, &s.name];
+    if let Some(m) = &s.model {
+        kargs.push("--model");
+        kargs.push(m);
+    }
+    self_command(&kargs)
 }
 
 fn shell_quote(s: &str) -> String {
@@ -161,13 +209,7 @@ fn up(file: Option<&std::path::Path>) -> Result<()> {
         if existing.contains(&s.window) {
             continue; // already running: left alone
         }
-        let dir = s.dir.to_string_lossy();
-        let mut kargs: Vec<&str> = vec!["keepalive", &dir, &s.name];
-        if let Some(m) = &s.model {
-            kargs.push("--model");
-            kargs.push(m);
-        }
-        let command = self_command(&kargs);
+        let command = keepalive_command(s);
         if fresh {
             tmux::new_session_detached(&session, &s.window, &s.dir, &command)?;
             fresh = false;
@@ -183,9 +225,14 @@ fn up(file: Option<&std::path::Path>) -> Result<()> {
         tmux::new_window(&session, "rc-watch", &dir, &command)?;
     }
 
+    if cfg.auto_suspend.enabled && !existing.iter().any(|w| w == "mem-watch") {
+        let command = self_command(&["memwatch"]);
+        tmux::new_window(&session, "mem-watch", &paths::home(), &command)?;
+    }
+
     // Also applied to windows that were already running, so an upgrade
     // protects them without restarting anything.
-    for w in sessions.iter().map(|s| s.window.as_str()).chain(["rc-watch"]) {
+    for w in sessions.iter().map(|s| s.window.as_str()).chain(["rc-watch", "mem-watch"]) {
         tmux::respawn_on_kill(&session, w);
     }
 
@@ -260,20 +307,6 @@ fn view(window: &str) -> Result<()> {
         .args(["attach", "-t", &format!("={}", alias)])
         .status();
     tmux::kill_session(&alias);
-    Ok(())
-}
-
-fn list() -> Result<()> {
-    let session = tmux_session();
-    let rows = tmux::window_info(&session);
-    if rows.is_empty() {
-        println!("No sessions running.");
-        return Ok(());
-    }
-    println!("{:<24} {:<10} {}", "WINDOW", "PROCESS", "FOLDER");
-    for f in rows {
-        println!("{:<24} {:<10} {}", f.name, f.command, f.path);
-    }
     Ok(())
 }
 
@@ -403,6 +436,6 @@ fn doctor() -> Result<()> {
         Err(e) => println!("{} {}", ko, e),
     }
     println!("== Running");
-    list()?;
+    suspend::list()?;
     Ok(())
 }

@@ -8,6 +8,10 @@ pub const TEMPLATE: &str = r#"# Claude Code sessions orchestrated by ccfarm.
 # tmux_session = "cc"        # name of the tmux session (optional)
 # remote_control_watch = true
 # model = "opus"             # default model for every session (optional)
+#
+# [auto_suspend]             # free memory from idle sessions (optional)
+# enabled = true
+# idle_minutes = 60
 
 [[session]]
 path = "~/projects/api"
@@ -36,8 +40,40 @@ pub struct Config {
     /// names belongs to Claude Code, not to ccfarm.
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub auto_suspend: AutoSuspend,
     #[serde(default, rename = "session")]
     pub sessions: Vec<SessionCfg>,
+}
+
+/// `[auto_suspend]`: the mem-watch window suspends idle sessions before the
+/// OOM killer starts picking windows itself.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct AutoSuspend {
+    pub enabled: bool,
+    /// Memory pressure (PSI "full" avg10, %) of the user's systemd cgroup
+    /// that triggers a suspension. systemd-oomd's default limit is 50-60%
+    /// sustained for 20 s, so this must sit well below it.
+    pub max_pressure: f64,
+    /// Available RAM plus free swap, in MB, below which one is suspended.
+    pub min_available_mb: u64,
+    /// Under pressure, sessions idle at least this long go first.
+    pub min_idle_minutes: u64,
+    /// Suspend any session idle this long even without pressure; 0 = never.
+    pub idle_minutes: u64,
+}
+
+impl Default for AutoSuspend {
+    fn default() -> Self {
+        AutoSuspend {
+            enabled: false,
+            max_pressure: 10.0,
+            min_available_mb: 2048,
+            min_idle_minutes: 15,
+            idle_minutes: 0,
+        }
+    }
 }
 
 fn default_tmux_session() -> String {
@@ -53,6 +89,8 @@ pub struct SessionCfg {
     pub name: Option<String>,
     /// Overrides the top-level `model` for this session alone.
     pub model: Option<String>,
+    /// `false` keeps mem-watch away from this session.
+    pub auto_suspend: Option<bool>,
 }
 
 /// A resolved session: absolute folder, name and tmux window.
@@ -63,6 +101,8 @@ pub struct Session {
     pub window: String,
     /// Already resolved: session override, else the file default, else None.
     pub model: Option<String>,
+    /// mem-watch may suspend it.
+    pub auto_suspend: bool,
 }
 
 impl Config {
@@ -122,7 +162,8 @@ impl Config {
                 continue;
             }
             let model = s.model.clone().or_else(|| self.model.clone());
-            out.push(Session { dir, name, window, model });
+            let auto_suspend = s.auto_suspend.unwrap_or(true);
+            out.push(Session { dir, name, window, model, auto_suspend });
         }
         out
     }

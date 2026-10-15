@@ -78,6 +78,12 @@ fn title_of(file: &Path) -> Option<String> {
 /// match wins; failing that, one that differs only in case. Ids in `skip`
 /// are ignored (they already failed to resume).
 pub fn find_session(dir: &Path, name: &str, skip: &[String]) -> Option<String> {
+    latest(dir, name, skip).map(|(id, _)| id)
+}
+
+/// Same lookup, also returning when that transcript was last written: the
+/// moment the conversation last did anything.
+pub fn latest(dir: &Path, name: &str, skip: &[String]) -> Option<(String, SystemTime)> {
     let entries = std::fs::read_dir(project_dir(dir)).ok()?;
     let mut exact: Option<(SystemTime, String)> = None;
     let mut loose: Option<(SystemTime, String)> = None;
@@ -105,7 +111,7 @@ pub fn find_session(dir: &Path, name: &str, skip: &[String]) -> Option<String> {
             *slot = Some((mtime, id));
         }
     }
-    exact.or(loose).map(|(_, id)| id)
+    exact.or(loose).map(|(t, id)| (id, t))
 }
 
 #[cfg(test)]

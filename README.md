@@ -24,6 +24,7 @@ cargo resolve freely.
 | `ccfarm attach [name]` | Attaches to tmux, **evicting** the previous client |
 | `ccfarm list` | State of the sessions |
 | `ccfarm stop <name>` | Closes a session and its restart loop |
+| `ccfarm suspend` / `restore` / `send` | Frees a session's memory and brings it back (see below) |
 | `ccfarm kill` | Closes everything |
 | `ccfarm edit` | Opens the file in `$EDITOR` |
 | `ccfarm doctor` | Full diagnostics |
@@ -154,6 +155,63 @@ window. `ccfarm up` applies this to windows that were already running too.
 
 `ccfarm stop` closes the window's tab along with it, and a tab whose window
 no longer exists says so and quits instead of showing another one.
+
+### Suspending sessions
+
+An idle Claude Code session holds a couple of hundred MB, and what it
+launches (builds, dev servers, test runs) can hold far more. Suspending one
+closes its `claude` and everything under it, leaving a waiting screen in the
+window; the conversation is already on disk. Restoring resumes it by id.
+
+| Command | What it does |
+| --- | --- |
+| `ccfarm list` | State (`idle`, `busy`, `suspended`), memory (RAM + swap) and idle time of each session |
+| `ccfarm suspend <name>...` | Suspends those sessions |
+| `ccfarm suspend --idle` | Suspends every idle session |
+| `ccfarm restore <name>...` / `--all` | Brings them back |
+| `ccfarm send <name> "<text>"` | Gives a session an order, waking it up first if needed |
+
+Busy sessions — mid-turn, or with background shells still running — are
+left alone unless you pass `--force`, and a session never suspends itself.
+Both checks read the pane, so like rc-watch they depend on Claude Code's
+wording.
+
+In the tab of a suspended session, **type an order and press Enter**: the
+session wakes up and receives it as its next message once it has loaded.
+Enter alone just wakes it.
+
+Because only tmux is involved, this works on windows started by an older
+ccfarm too.
+
+#### Automatically
+
+```toml
+[auto_suspend]
+enabled = true
+idle_minutes = 60        # suspend anything idle this long; 0 = never
+max_pressure = 10        # % memory pressure that triggers a suspension
+min_available_mb = 2048  # ...or available RAM + free swap below this
+min_idle_minutes = 15    # under pressure, sessions idle this long go first
+
+[[session]]
+path = "~"
+name = "conserje"
+auto_suspend = false     # never suspended
+```
+
+With it enabled, `ccfarm up` opens a `mem-watch` window that suspends
+sessions idle for `idle_minutes`, and, under memory pressure, the
+longest-idle one every 20 s until the pressure goes away. "Idle" is measured
+from the last write to the conversation's transcript (or the session's last
+start, whichever is later). Pressure is the PSI `full` avg10 of the user's
+systemd manager cgroup — the very figure systemd-oomd acts on at 50 % for
+20 s — so the threshold has to sit well below that.
+
+**A suspended session is not on Remote Control**: Remote Control lives in
+the `claude` process, so the session disappears from the phone and nothing
+sent from there can wake it. Keep one session with `auto_suspend = false` as
+a concierge: from the phone, ask it to `ccfarm send <name> "..."`, and the
+target wakes up, gets the order and is back on Remote Control.
 
 ### ssh-agent
 
