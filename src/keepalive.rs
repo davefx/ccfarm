@@ -1,4 +1,4 @@
-use crate::paths;
+use crate::{paths, transcripts};
 use anyhow::Result;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -59,14 +59,21 @@ pub fn run(dir: &Path, name: &str, model: Option<&str>) -> Result<()> {
     }
 
     let marker = marker(dir, name);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| dir.to_path_buf());
+    let mut failed: Vec<String> = Vec::new();
     let mut delay: u64 = 2;
 
     loop {
-        let resume = marker.exists();
-        let mut args: Vec<String> = if resume {
-            vec!["--resume".into(), name.into()]
-        } else {
-            vec!["-n".into(), name.into()]
+        // Resume by id when a transcript carries this exact name: `claude
+        // --resume <name>` matches loosely and opens its picker as soon as
+        // several conversations look alike. The bare name is only the
+        // fallback when no transcript is found.
+        let found = transcripts::find_session(&cwd, name, &failed);
+        let resume = found.is_some() || marker.exists();
+        let mut args: Vec<String> = match &found {
+            Some(id) => vec!["--resume".into(), id.clone()],
+            None if resume => vec!["--resume".into(), name.into()],
+            None => vec!["-n".into(), name.into()],
         };
         // Passed through untouched: `claude --model` takes an alias ("opus")
         // or a full id ("claude-opus-4-8"), and which names are valid is for
@@ -116,6 +123,12 @@ pub fn run(dir: &Path, name: &str, model: Option<&str>) -> Result<()> {
         // A --resume that fails outright: purged transcript or ambiguous
         // name. Start over instead of insisting on nothing.
         if resume && rc != 0 && dur < 15 {
+            if let Some(id) = found {
+                println!("[ccfarm] '{}': could not resume {}; trying the next match.", name, id);
+                failed.push(id);
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
             println!("[ccfarm] '{}': could not resume; a new session will be created.", name);
             let _ = std::fs::remove_file(&marker);
             std::thread::sleep(Duration::from_secs(2));

@@ -122,11 +122,24 @@ a client.
 
 ### Resuming sessions
 
-The first start uses `claude -n <name>`; from then on,
-`claude --resume <name>`. The "already exists" mark is written once the
-session has been alive for ten seconds, not when it ends, so that an abrupt
-machine reboot does not cause a new session.  If the `--resume` fails
-outright — purged transcript, ambiguous name — a new session is created.
+The first start uses `claude -n <name>`. From then on ccfarm resumes by
+**session id**, not by name: it reads the transcripts Claude Code keeps for
+that folder (`~/.claude/projects/<folder>/*.jsonl`), takes the most recently
+written one whose current title (the last `/rename`) is exactly the session
+name, and runs `claude --resume <id>`. `claude --resume <name>` alone matches
+loosely, so as soon as a folder holds several conversations with similar
+titles ("Cuéntamo", "Cuéntamo + Habeas") it stops at the picker instead.
+
+If no title matches exactly, one that differs only in case is accepted
+(`laudanza` resumes a conversation renamed to `Laudanza`). Only when no
+transcript matches at all does ccfarm fall back to `claude --resume <name>`,
+and only if the session's "already exists" mark is there; otherwise it
+creates the session with `-n`. That mark is written once the session has been
+alive for ten seconds, not when it ends, so that an abrupt machine reboot does
+not cause a new session.
+
+If resuming fails outright, the next matching transcript is tried, then the
+name, and finally a new session is created.
 
 ### ssh-agent
 
@@ -210,6 +223,7 @@ session, so as not to steal it back.
   window is built in one shot, re-running `up` after some tabs are already
   open puts the *newly added* sessions in a second window — CLI gnome-terminal
   cannot inject a tab into a specific pre-existing window.
-- If a session name turns out to be ambiguous, `claude --resume` opens the
-  interactive picker and that window sits waiting for you to press Esc.
+- When no transcript carries the session's name and ccfarm falls back to
+  `claude --resume <name>`, an ambiguous name still opens the interactive
+  picker, and that window waits until you press Esc.
 - Remote Control failure detection is textual, as explained above.

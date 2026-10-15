@@ -11,6 +11,7 @@ mod keepalive;
 mod paths;
 mod rcwatch;
 mod tmux;
+mod transcripts;
 mod ui;
 
 use anyhow::{bail, Result};
