@@ -183,6 +183,12 @@ fn up(file: Option<&std::path::Path>) -> Result<()> {
         tmux::new_window(&session, "rc-watch", &dir, &command)?;
     }
 
+    // Also applied to windows that were already running, so an upgrade
+    // protects them without restarting anything.
+    for w in sessions.iter().map(|s| s.window.as_str()).chain(["rc-watch"]) {
+        tmux::respawn_on_kill(&session, w);
+    }
+
     if let Some(a) = &ag {
         let l = a.link.to_string_lossy().to_string();
         tmux::setenv(Some(&session), "SSH_AUTH_SOCK", &l);
@@ -224,7 +230,7 @@ fn attach(name: Option<&str>) -> Result<()> {
                 return Ok(());
             }
         }
-        tmux::select_window(&format!("{}:{}", session, w));
+        tmux::select_window(&session, &w);
     }
     // -d evicts the previous client: it takes over the session
     tmux::attach_exec(&session, true);
@@ -241,7 +247,13 @@ fn view(window: &str) -> Result<()> {
     if !tmux::has_session(&alias) {
         tmux::new_grouped_session(&session, &alias)?;
     }
-    tmux::select_window(&format!("{}:{}", alias, window));
+    if !tmux::select_window(&alias, window) {
+        // Never fall back to whatever window the group happens to show.
+        eprintln!("Window {} does not exist (ccfarm up recreates it)", window);
+        tmux::kill_session(&alias);
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        std::process::exit(1);
+    }
 
     // exec is not used: on exit the view session must be cleaned up.
     let _ = Command::new("tmux")
@@ -269,6 +281,8 @@ fn stop(name: &str) -> Result<()> {
     let session = tmux_session();
     let w = config::sanitize_window(name);
     if tmux::kill_window(&session, &w) {
+        // Its tab would otherwise slide onto another window of the group.
+        tmux::kill_session(&format!("view-{}", w));
         println!("Closed '{}'.", w);
         Ok(())
     } else {

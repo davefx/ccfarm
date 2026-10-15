@@ -141,6 +141,20 @@ not cause a new session.
 If resuming fails outright, the next matching transcript is tried, then the
 name, and finally a new session is created.
 
+### Killed windows
+
+Every window ccfarm manages has `remain-on-exit` on and a `pane-died` hook:
+when its process is killed by a **signal** — typically `systemd-oomd`, which
+under memory pressure kills the whole `tmux-spawn-*.scope` of a pane, restart
+loop included — the window stays where it is and tmux starts its command
+again. Without that the window vanishes, and every tab looking at it
+silently slides onto another window of the group, so it shows the wrong
+session. A clean exit (`q`, then `exit` in the shell) still closes the
+window. `ccfarm up` applies this to windows that were already running too.
+
+`ccfarm stop` closes the window's tab along with it, and a tab whose window
+no longer exists says so and quits instead of showing another one.
+
 ### ssh-agent
 
 A *persistent* agent is *always* preferred, because it is the only one

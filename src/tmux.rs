@@ -156,8 +156,47 @@ pub fn new_window(session: &str, window: &str, cwd: &Path, cmd: &str) -> Result<
     .map(|_| ())
 }
 
+/// Id (`@N`) of the window named exactly `window`. A plain `session:name`
+/// target falls back to prefix matching, so with "Cu_ntamo" gone it would
+/// hit "Cu_ntamo___Habeas" instead.
+pub fn window_id(session: &str, window: &str) -> Option<String> {
+    run(&[
+        "list-windows",
+        "-t",
+        &format!("={}", session),
+        "-F",
+        "#{window_id}|#{window_name}",
+    ])
+    .ok()?
+    .lines()
+    .find_map(|l| {
+        let (id, name) = l.split_once('|')?;
+        (name == window).then(|| id.to_string())
+    })
+}
+
 pub fn kill_window(session: &str, window: &str) -> bool {
-    ok(&["kill-window", "-t", &format!("{}:{}", session, window)])
+    match window_id(session, window) {
+        Some(id) => ok(&["kill-window", "-t", &id]),
+        None => false,
+    }
+}
+
+/// Keeps a window in place when its process is killed by a signal (the
+/// OOM killer, typically) and starts its original command again. Without
+/// this the window vanishes and every view on it slides onto another
+/// window of the group. A clean exit still closes the window.
+pub fn respawn_on_kill(session: &str, window: &str) {
+    let Some(id) = window_id(session, window) else { return };
+    let _ = run(&["set-option", "-w", "-t", &id, "remain-on-exit", "on"]);
+    let _ = run(&[
+        "set-hook",
+        "-w",
+        "-t",
+        &id,
+        "pane-died",
+        "if-shell -F '#{pane_dead_signal}' 'respawn-pane -k' 'kill-pane'",
+    ]);
 }
 
 pub fn kill_session(session: &str) -> bool {
@@ -187,8 +226,12 @@ pub fn setenv(session: Option<&str>, var: &str, value: &str) {
     }
 }
 
-pub fn select_window(target: &str) {
-    let _ = run(&["select-window", "-t", target]);
+/// Makes `window` (exact name) the current window of `session`.
+pub fn select_window(session: &str, window: &str) -> bool {
+    match window_id(session, window) {
+        Some(id) => run(&["select-window", "-t", &format!("={}:{}", session, id)]).is_ok(),
+        None => false,
+    }
 }
 
 /// Creates a "grouped" session: shared windows, independent focus.
