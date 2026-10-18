@@ -165,16 +165,24 @@ window; the conversation is already on disk. Restoring resumes it by id.
 
 | Command | What it does |
 | --- | --- |
-| `ccfarm list` | State (`idle`, `busy`, `suspended`), memory (RAM + swap) and idle time of each session |
+| `ccfarm list` | Memory (RAM + swap), time since the last message, and state (`idle`, `busy: <why>`, `suspended`) of each session |
 | `ccfarm suspend <name>...` | Suspends those sessions |
 | `ccfarm suspend --idle` | Suspends every idle session |
 | `ccfarm restore <name>...` / `--all` | Brings them back |
 | `ccfarm send <name> "<text>"` | Gives a session an order, waking it up first if needed |
 
-Busy sessions — mid-turn, or with background shells still running — are
-left alone unless you pass `--force`, and a session never suspends itself.
-Both checks read the pane, so like rc-watch they depend on Claude Code's
-wording.
+Busy sessions are left alone unless you pass `--force`, and a session
+never suspends itself. Busy means any of:
+
+- on screen: mid-turn ("esc to interrupt"), background shells in the status
+  line, or a permission prompt or question waiting for your answer;
+- in the conversation's transcript: background tasks (shells, monitors,
+  async agents) started by the current `claude` that have not reported back,
+  a `ScheduleWakeup` still to fire, or a turn left unanswered in the last
+  six hours.
+
+The screen checks depend on Claude Code's wording, like rc-watch; the
+transcript ones on its record format.
 
 In the tab of a suspended session, **type an order and press Enter**: the
 session wakes up and receives it as its next message once it has loaded.
@@ -189,9 +197,9 @@ ccfarm too.
 [auto_suspend]
 enabled = true
 idle_minutes = 60        # suspend anything idle this long; 0 = never
-max_pressure = 10        # % memory pressure that triggers a suspension
+max_pressure = 25        # % memory pressure (avg60) that triggers a suspension
 min_available_mb = 2048  # ...or available RAM + free swap below this
-min_idle_minutes = 15    # under pressure, sessions idle this long go first
+min_idle_minutes = 30    # under pressure, only sessions idle this long
 
 [[session]]
 path = "~"
@@ -201,11 +209,16 @@ auto_suspend = false     # never suspended
 
 With it enabled, `ccfarm up` opens a `mem-watch` window that suspends
 sessions idle for `idle_minutes`, and, under memory pressure, the
-longest-idle one every 20 s until the pressure goes away. "Idle" is measured
-from the last write to the conversation's transcript (or the session's last
-start, whichever is later). Pressure is the PSI `full` avg10 of the user's
-systemd manager cgroup — the very figure systemd-oomd acts on at 50 % for
-20 s — so the threshold has to sit well below that.
+longest-idle one every 20 s until the pressure goes away — but only among
+sessions idle for at least `min_idle_minutes`: one used a moment ago is
+never taken, pressure or not. "Idle" is the time since the conversation's
+last message (not the transcript's modification time, which resuming also
+touches). A session just started or restored gets ten minutes of grace.
+
+Pressure is the PSI `full` avg60 of the user's systemd manager cgroup, the
+cgroup systemd-oomd watches (it acts at 50 % for 20 s). The 60-second
+average, because 10-second spikes past 10 % are routine on a busy desktop
+and suspending on them only takes sessions away for nothing.
 
 **A suspended session is not on Remote Control**: Remote Control lives in
 the `claude` process, so the session disappears from the phone and nothing

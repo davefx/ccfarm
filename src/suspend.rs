@@ -18,19 +18,57 @@ fn is_suspended(p: &Pane) -> bool {
     p.start_command.contains("'parked'")
 }
 
-/// Claude Code is mid-turn ("esc to interrupt" in its status line) or
-/// still has background shells. Read from the pane, like rc-watch does:
-/// a heuristic that depends on Claude Code's wording.
-fn is_busy(p: &Pane) -> bool {
-    let Some(text) = tmux::capture_pane(&p.window_id, 0) else { return false };
-    let tail: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).rev().take(6).collect();
-    tail.iter().any(|l| {
-        if l.contains("esc to interrupt") {
-            return true;
+/// Why a session must not be suspended now, if it must not. Two sources:
+/// the pane (Claude Code mid-turn, or background shells in its status
+/// line — a heuristic on its wording, like rc-watch) and the transcript
+/// (background tasks that have not reported back, a pending wake-up, or a
+/// turn left unanswered), which also covers work that leaves no trace on
+/// screen.
+fn busy_reason(s: &Session, p: &Pane) -> Option<String> {
+    if let Some(text) = tmux::capture_pane(&p.window_id, 0) {
+        // A permission prompt or a question waits for you with no
+        // "esc to interrupt" on screen.
+        if text.contains("Do you want to proceed?") || text.contains("Esc to cancel") {
+            return Some("waiting for your answer".into());
         }
-        let words: Vec<&str> = l.split(|c: char| c.is_whitespace() || c == '·').filter(|w| !w.is_empty()).collect();
-        words.windows(2).any(|w| w[0].parse::<u32>().map_or(false, |n| n > 0) && w[1].starts_with("shell"))
-    })
+        let tail: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).rev().take(6).collect();
+        for l in tail {
+            if l.contains("esc to interrupt") {
+                return Some("working".into());
+            }
+            let words: Vec<&str> = l.split(|c: char| c.is_whitespace() || c == '·' || c == ',').filter(|w| !w.is_empty()).collect();
+            if words.windows(2).any(|w| w[0].parse::<u32>().map_or(false, |n| n > 0) && w[1].starts_with("shell")) {
+                return Some("background shells".into());
+            }
+        }
+    }
+    let a = activity_of(s, p)?;
+    if !a.pending_tasks.is_empty() {
+        return Some(format!("{} background task(s)", a.pending_tasks.len()));
+    }
+    if a.wakeup_pending {
+        return Some("wake-up scheduled".into());
+    }
+    let recent = a.last_message.and_then(|t| t.elapsed().ok()).map_or(false, |d| d.as_secs() < 6 * 3600);
+    if a.turn_open && recent {
+        return Some("turn unfinished".into());
+    }
+    None
+}
+
+fn is_busy(s: &Session, p: &Pane) -> bool {
+    busy_reason(s, p).is_some()
+}
+
+/// When the pane's current process started.
+fn started(p: &Pane) -> Option<std::time::SystemTime> {
+    std::fs::metadata(format!("/proc/{}", p.pid)).and_then(|m| m.modified()).ok()
+}
+
+fn activity_of(s: &Session, p: &Pane) -> Option<transcripts::Activity> {
+    let (id, _) = transcripts::latest(&s.dir, &s.name, &[])?;
+    let since = started(p).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    Some(transcripts::activity(&transcripts::transcript_path(&s.dir, &id), since))
 }
 
 /// Parent of every process, from /proc.
@@ -95,18 +133,22 @@ fn pick<'a>(farm: &'a [(Session, Pane)], name: &str) -> Result<&'a (Session, Pan
         .ok_or_else(|| anyhow::anyhow!("no running session called '{}'", name))
 }
 
-/// Seconds since the session last did anything: the later of its
-/// transcript's last write and the start of its process (a session just
-/// restored or created counts as active).
+/// Seconds since the conversation's last message. Not the transcript's
+/// modification time: resuming a conversation writes to it too, so after a
+/// reboot every session would look freshly used.
 fn idle_secs(s: &Session, p: &Pane) -> u64 {
-    let last = [
-        transcripts::latest(&s.dir, &s.name, &[]).map(|(_, t)| t),
-        std::fs::metadata(format!("/proc/{}", p.pid)).and_then(|m| m.modified()).ok(),
-    ]
-    .into_iter()
-    .flatten()
-    .max();
+    let last = activity_of(s, p)
+        .and_then(|a| a.last_message)
+        .or_else(|| transcripts::latest(&s.dir, &s.name, &[]).map(|(_, t)| t))
+        .or_else(|| started(p));
     last.and_then(|t| t.elapsed().ok()).map_or(0, |d| d.as_secs())
+}
+
+/// Seconds since the pane's process started: a session just created or
+/// restored gets a grace period before mem-watch may take it again, so an
+/// order on its way (`ccfarm send`) is not lost.
+fn age_secs(p: &Pane) -> u64 {
+    started(p).and_then(|t| t.elapsed().ok()).map_or(0, |d| d.as_secs())
 }
 
 fn ago(secs: u64) -> String {
@@ -124,21 +166,19 @@ pub fn list() -> Result<()> {
         return Ok(());
     }
     let parents = parents();
-    println!("{:<44} {:<10} {:>8} {:>7}", "SESSION", "STATE", "MEMORY", "IDLE");
+    println!("{:<44} {:>8} {:>7}  {}", "SESSION", "MEMORY", "IDLE", "STATE");
     let mut total = 0;
     for (s, p) in &farm {
         let state = if is_suspended(p) {
-            "suspended"
-        } else if is_busy(p) {
-            "busy"
+            "suspended".to_string()
         } else {
-            "idle"
+            busy_reason(s, p).map_or("idle".into(), |r| format!("busy: {}", r))
         };
         let kib = tree_kib(p.pid, &parents);
         total += kib;
-        println!("{:<44} {:<10} {:>8} {:>7}", s.name, state, mib(kib), ago(idle_secs(s, p)));
+        println!("{:<44} {:>8} {:>7}  {}", s.name, mib(kib), ago(idle_secs(s, p)), state);
     }
-    println!("{:<44} {:<10} {:>8}", "", "", mib(total));
+    println!("{:<44} {:>8}", "", mib(total));
     Ok(())
 }
 
@@ -170,8 +210,8 @@ pub fn suspend(names: &[String], idle: bool, force: bool) -> Result<()> {
             }
             continue;
         }
-        if is_busy(p) && !force {
-            println!("{}: busy, left alone (--force to suspend it anyway).", s.name);
+        if let Some(why) = busy_reason(s, p).filter(|_| !force) {
+            println!("{}: busy ({}), left alone (--force to suspend it anyway).", s.name, why);
             continue;
         }
         let kib = park(s, p, &parents)?;
@@ -217,8 +257,10 @@ pub fn restore(names: &[String], all: bool) -> Result<()> {
 // mem-watch: automatic suspension
 // ===================================================================
 
-/// PSI "full" avg10 of the user's systemd manager cgroup, the one
-/// systemd-oomd watches; the system-wide figure as a fallback.
+/// PSI "full" avg60 of the user's systemd manager cgroup, the one
+/// systemd-oomd watches; the system-wide figure as a fallback. The 60 s
+/// average, not the 10 s one: short spikes are routine and suspending on
+/// them takes sessions away for nothing.
 fn pressure() -> f64 {
     let uid = unsafe { libc::getuid() };
     let cg = format!(
@@ -230,7 +272,7 @@ fn pressure() -> f64 {
         .unwrap_or_default();
     text.lines()
         .find(|l| l.starts_with("full"))
-        .and_then(|l| l.split_whitespace().find_map(|f| f.strip_prefix("avg10=")))
+        .and_then(|l| l.split_whitespace().find_map(|f| f.strip_prefix("avg60=")))
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.0)
 }
@@ -279,20 +321,21 @@ pub fn memwatch() -> ! {
             continue;
         }
 
-        // Candidates: running, not busy, most idle first.
+        // Candidates: running for a while, not busy, most idle first.
         let mut idle: Vec<(u64, Session, Pane)> = farm_of(&cfg)
             .into_iter()
-            .filter(|(s, p)| s.auto_suspend && !is_suspended(p) && !is_busy(p))
+            .filter(|(s, p)| s.auto_suspend && !is_suspended(p) && age_secs(p) >= 600 && !is_busy(s, p))
             .map(|(s, p)| (idle_secs(&s, &p), s, p))
             .collect();
         idle.sort_by(|x, y| y.0.cmp(&x.0));
         let parents = parents();
 
         if pressed {
-            // One at a time: pressure takes ~10 s to reflect what was freed.
-            // Long-idle sessions first; under real pressure, any idle one.
+            // One at a time, most idle first, and never one used recently:
+            // freeing a session that was about to be needed is worse than
+            // the pressure.
             let floor = a.min_idle_minutes * 60;
-            let victim = idle.iter().find(|(t, ..)| *t >= floor).or_else(|| idle.first());
+            let victim = idle.iter().find(|(t, ..)| *t >= floor);
             match victim {
                 Some((t, s, p)) => match park(s, p, &parents) {
                     Ok(kib) => println!(
@@ -302,7 +345,7 @@ pub fn memwatch() -> ! {
                     Err(e) => println!("[mem-watch] could not suspend '{}': {}", s.name, e),
                 },
                 None => println!(
-                    "[mem-watch] {} pressure {:.1}%, {} MB free, but every session is busy.",
+                    "[mem-watch] {} pressure {:.1}%, {} MB free, but no session is idle enough.",
                     stamp(), psi, avail
                 ),
             }

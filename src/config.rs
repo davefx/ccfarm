@@ -52,9 +52,9 @@ pub struct Config {
 #[serde(default)]
 pub struct AutoSuspend {
     pub enabled: bool,
-    /// Memory pressure (PSI "full" avg10, %) of the user's systemd cgroup
+    /// Memory pressure (PSI "full" avg60, %) of the user's systemd cgroup
     /// that triggers a suspension. systemd-oomd's default limit is 50-60%
-    /// sustained for 20 s, so this must sit well below it.
+    /// sustained for 20 s, so this must sit below it.
     pub max_pressure: f64,
     /// Available RAM plus free swap, in MB, below which one is suspended.
     pub min_available_mb: u64,
@@ -68,9 +68,9 @@ impl Default for AutoSuspend {
     fn default() -> Self {
         AutoSuspend {
             enabled: false,
-            max_pressure: 10.0,
+            max_pressure: 25.0,
             min_available_mb: 2048,
-            min_idle_minutes: 15,
+            min_idle_minutes: 30,
             idle_minutes: 0,
         }
     }
