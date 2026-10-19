@@ -73,5 +73,11 @@ pub fn expand_tilde(s: &str) -> PathBuf {
 
 /// Absolute path of this very executable, to re-invoke itself inside tmux.
 pub fn self_exe() -> PathBuf {
-    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ccfarm"))
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ccfarm"));
+    // Once the binary is reinstalled, Linux reports the old one as
+    // "<path> (deleted)"; the new one sits at the same path.
+    match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(s) => PathBuf::from(s),
+        None => exe,
+    }
 }
