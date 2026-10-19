@@ -150,6 +150,20 @@ pub fn caller_window() -> Option<String> {
     Some(out.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// Last time someone pressed a key (or scrolled) in a client showing
+/// window `window_id`, through any session of its group.
+pub fn last_input(window_id: &str) -> Option<std::time::SystemTime> {
+    run(&["list-clients", "-F", "#{window_id}|#{client_activity}"])
+        .ok()?
+        .lines()
+        .filter_map(|l| {
+            let (id, t) = l.split_once('|')?;
+            (id == window_id).then(|| t.parse::<u64>().ok()).flatten()
+        })
+        .max()
+        .map(|t| std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(t))
+}
+
 pub fn capture_pane(pane: &str, lines: u32) -> Option<String> {
     run(&["capture-pane", "-p", "-t", pane, "-S", &format!("-{}", lines)]).ok()
 }

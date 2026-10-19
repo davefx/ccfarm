@@ -133,14 +133,22 @@ fn pick<'a>(farm: &'a [(Session, Pane)], name: &str) -> Result<&'a (Session, Pan
         .ok_or_else(|| anyhow::anyhow!("no running session called '{}'", name))
 }
 
-/// Seconds since the conversation's last message. Not the transcript's
+/// Seconds since the session was last used: the latest of its last
+/// message, its start (a session just restored is in use, however old its
+/// last message), and the last key pressed in a tab showing it (reading,
+/// scrolling or typing a prompt not sent yet). Not the transcript's
 /// modification time: resuming a conversation writes to it too, so after a
 /// reboot every session would look freshly used.
 fn idle_secs(s: &Session, p: &Pane) -> u64 {
-    let last = activity_of(s, p)
+    let message = activity_of(s, p)
         .and_then(|a| a.last_message)
-        .or_else(|| transcripts::latest(&s.dir, &s.name, &[]).map(|(_, t)| t))
-        .or_else(|| started(p));
+        .or_else(|| transcripts::latest(&s.dir, &s.name, &[]).map(|(_, t)| t));
+    // A suspended window shows the waiting screen: its start and its tabs
+    // say when it was suspended or attached, not used.
+    let live = if is_suspended(p) { None } else { Some(p) };
+    let start = live.and_then(started);
+    let input = live.and_then(|p| tmux::last_input(&p.window_id));
+    let last = [message, start, input].into_iter().flatten().max();
     last.and_then(|t| t.elapsed().ok()).map_or(0, |d| d.as_secs())
 }
 

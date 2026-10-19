@@ -165,7 +165,7 @@ window; the conversation is already on disk. Restoring resumes it by id.
 
 | Command | What it does |
 | --- | --- |
-| `ccfarm list` | Memory (RAM + swap), time since the last message, and state (`idle`, `busy: <why>`, `suspended`) of each session |
+| `ccfarm list` | Memory (RAM + swap), time since last used, and state (`idle`, `busy: <why>`, `suspended`) of each session |
 | `ccfarm suspend <name>...` | Suspends those sessions |
 | `ccfarm suspend --idle` | Suspends every idle session |
 | `ccfarm restore <name>...` / `--all` | Brings them back |
@@ -211,9 +211,11 @@ With it enabled, `ccfarm up` opens a `mem-watch` window that suspends
 sessions idle for `idle_minutes`, and, under memory pressure, the
 longest-idle one every 20 s until the pressure goes away — but only among
 sessions idle for at least `min_idle_minutes`: one used a moment ago is
-never taken, pressure or not. "Idle" is the time since the conversation's
-last message (not the transcript's modification time, which resuming also
-touches). A session just started or restored gets ten minutes of grace.
+never taken, pressure or not. "Idle" is the time since the latest of the
+conversation's last message (not the transcript's modification time, which
+resuming also touches), the session's start or restore, and the last key
+pressed in a tab showing it — reading or scrolling counts as using it. A
+session just started or restored also gets ten minutes of grace.
 
 Pressure is the PSI `full` avg60 of the user's systemd manager cgroup, the
 cgroup systemd-oomd watches (it acts at 50 % for 20 s). The 60-second
