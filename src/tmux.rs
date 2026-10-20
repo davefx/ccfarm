@@ -245,6 +245,32 @@ pub fn respawn_on_kill(session: &str, window: &str) {
     ]);
 }
 
+/// Ties view session `alias` to window `window_id`: the moment it would
+/// show any other window (that one closed and the group moved on), its
+/// clients are detached and `@ccfarm_lost` is set, so `ccfarm view` knows
+/// to wait for the window instead of quitting.
+pub fn pin_view(alias: &str, window_id: &str) {
+    // Options and hooks take a pane target: "=name" alone does not resolve.
+    let t = format!("={}:", alias);
+    let _ = run(&["set-option", "-u", "-t", &t, "@ccfarm_lost"]);
+    let _ = run(&[
+        "set-hook",
+        "-t",
+        &t,
+        "session-window-changed",
+        &format!(
+            "if-shell -F '#{{!=:#{{window_id}},{}}}' \"set-option -t '{}' @ccfarm_lost 1 ; detach-client -s '={}'\"",
+            window_id, t, alias
+        ),
+    ]);
+}
+
+/// The window pinned by `pin_view` went away while attached.
+pub fn view_lost(alias: &str) -> bool {
+    run(&["show-options", "-v", "-t", &format!("={}:", alias), "@ccfarm_lost"])
+        .map_or(false, |v| v.trim() == "1")
+}
+
 pub fn kill_session(session: &str) -> bool {
     ok(&["kill-session", "-t", &format!("={}", session)])
 }

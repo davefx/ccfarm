@@ -291,31 +291,46 @@ fn view(window: &str) -> Result<()> {
         std::process::exit(1);
     }
     let alias = format!("view-{}", window);
-    if !tmux::has_session(&alias) {
-        tmux::new_grouped_session(&session, &alias)?;
-    }
-    if !tmux::select_window(&alias, window) {
-        // Never fall back to whatever window the group happens to show.
-        eprintln!("Window {} does not exist (ccfarm up recreates it)", window);
-        tmux::kill_session(&alias);
-        std::thread::sleep(std::time::Duration::from_secs(5));
-        std::process::exit(1);
-    }
+    let mut waiting = false;
+    loop {
+        // Never fall back to whatever window the group happens to show:
+        // with this one gone, wait for it to come back.
+        let Some(id) = tmux::window_id(&session, window) else {
+            if !waiting {
+                println!("Window {} does not exist; waiting for it (ccfarm up recreates it)...", window);
+                waiting = true;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            continue;
+        };
+        waiting = false;
+        if !tmux::has_session(&alias) {
+            tmux::new_grouped_session(&session, &alias)?;
+        }
+        tmux::select_window(&alias, window);
+        tmux::pin_view(&alias, &id);
 
-    // exec is not used: on exit the view session must be cleaned up.
-    let _ = Command::new("tmux")
-        .args(["attach", "-t", &format!("={}", alias)])
-        .status();
-    tmux::kill_session(&alias);
-    Ok(())
+        // exec is not used: on exit the view session must be cleaned up.
+        let _ = Command::new("tmux")
+            .args(["attach", "-t", &format!("={}", alias)])
+            .status();
+        // Detached by hand, or the session killed (`ccfarm stop`): done.
+        if !tmux::view_lost(&alias) {
+            tmux::kill_session(&alias);
+            return Ok(());
+        }
+        print!("\x1b[2J\x1b[H");
+    }
 }
 
 fn stop(name: &str) -> Result<()> {
     let session = tmux_session();
     let w = config::sanitize_window(name);
-    if tmux::kill_window(&session, &w) {
-        // Its tab would otherwise slide onto another window of the group.
+    if tmux::window_id(&session, &w).is_some() {
+        // Its tab first: with the window gone first, the tab would wait
+        // for it to come back.
         tmux::kill_session(&format!("view-{}", w));
+        tmux::kill_window(&session, &w);
         println!("Closed '{}'.", w);
         Ok(())
     } else {

@@ -153,8 +153,10 @@ silently slides onto another window of the group, so it shows the wrong
 session. A clean exit (`q`, then `exit` in the shell) still closes the
 window. `ccfarm up` applies this to windows that were already running too.
 
-`ccfarm stop` closes the window's tab along with it, and a tab whose window
-no longer exists says so and quits instead of showing another one.
+A tab never shows another window than its own: if its window closes
+anyway, the tab says so and waits, and reattaches as soon as the window is
+back (`ccfarm up`). `ccfarm stop` closes the window's tab along with it,
+and detaching (`prefix d`) closes the tab as before.
 
 ### Suspending sessions
 
