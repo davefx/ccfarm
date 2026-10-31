@@ -178,8 +178,10 @@ never suspends itself. Busy means any of:
 
 - on screen: mid-turn ("esc to interrupt"), background shells in the status
   line, or a permission prompt or question waiting for your answer;
-- in the conversation's transcript: background tasks (shells, monitors,
-  async agents) started by the current `claude` that have not reported back,
+- in the conversation's transcript: background shells and monitors started
+  by the current `claude` that have not reported back, as long as one of
+  its Bash tool shells is still alive (one that died or timed out may never
+  report), async agents that have not reported back,
   a `ScheduleWakeup` still to fire, or a turn left unanswered in the last
   six hours.
 

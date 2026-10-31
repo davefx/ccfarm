@@ -43,8 +43,13 @@ fn busy_reason(s: &Session, p: &Pane) -> Option<String> {
         }
     }
     let a = activity_of(s, p)?;
-    if !a.pending_tasks.is_empty() {
+    // A shell or monitor that died or timed out may never report back:
+    // only one with a live process counts.
+    if !a.pending_tasks.is_empty() && tool_shells(p.pid) > 0 {
         return Some(format!("{} background task(s)", a.pending_tasks.len()));
+    }
+    if !a.pending_agents.is_empty() {
+        return Some(format!("{} background agent(s)", a.pending_agents.len()));
     }
     if a.wakeup_pending {
         return Some("wake-up scheduled".into());
@@ -58,6 +63,22 @@ fn busy_reason(s: &Session, p: &Pane) -> Option<String> {
 
 fn is_busy(s: &Session, p: &Pane) -> bool {
     busy_reason(s, p).is_some()
+}
+
+/// Shells Claude Code's Bash tool runs (they source its shell snapshot)
+/// still alive under `pid`, background tasks and monitors included.
+fn tool_shells(pid: u32) -> usize {
+    let parents = parents();
+    let mut count = 0;
+    let mut stack = vec![pid];
+    while let Some(p) = stack.pop() {
+        let cmd = std::fs::read(format!("/proc/{}/cmdline", p)).unwrap_or_default();
+        if String::from_utf8_lossy(&cmd).contains("/shell-snapshots/") {
+            count += 1;
+        }
+        stack.extend(parents.iter().filter(|(_, pp)| **pp == p).map(|(c, _)| *c));
+    }
+    count
 }
 
 /// When the pane's current process started.

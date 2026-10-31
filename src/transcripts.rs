@@ -119,9 +119,12 @@ pub fn latest(dir: &Path, name: &str, skip: &[String]) -> Option<(String, System
 pub struct Activity {
     /// Last message from either side (tool calls and results included).
     pub last_message: Option<SystemTime>,
-    /// Background tasks (shells, monitors, async agents) started at or after
-    /// `since` that have not reported back yet.
+    /// Background shells and monitors started at or after `since` that
+    /// have not reported back yet. One that dies or times out may never
+    /// report, so callers check for live processes too.
     pub pending_tasks: Vec<String>,
+    /// Async agents likewise. They run inside `claude` itself.
+    pub pending_agents: Vec<String>,
     /// The last message came from the user side (a prompt, a tool result,
     /// a task notification) and Claude has not answered it.
     pub turn_open: bool,
@@ -159,10 +162,20 @@ pub fn activity(file: &Path, since: SystemTime) -> Activity {
     let mut a = Activity::default();
     let Ok(f) = std::fs::File::open(file) else { return a };
     let mut started: Vec<String> = Vec::new();
+    let mut agents: Vec<String> = Vec::new();
     let mut finished: Vec<String> = Vec::new();
     let mut wake_at: Option<SystemTime> = None;
     for line in BufReader::new(f).lines() {
         let Ok(line) = line else { continue };
+        // Task notifications may only land in queue-operation or attachment
+        // records, so these are read from every record.
+        for marker in ["<task-id>", "stopped task: "] {
+            let mut rest = line.as_str();
+            while let Some(id) = id_after(rest, marker) {
+                finished.push(id.to_string());
+                rest = &rest[rest.find(marker).unwrap() + marker.len()..];
+            }
+        }
         let user = line.contains("\"type\":\"user\"");
         if !user && !line.contains("\"type\":\"assistant\"") {
             continue;
@@ -188,15 +201,8 @@ pub fn activity(file: &Path, since: SystemTime) -> Activity {
             }
             if line.contains("Async agent launched") {
                 if let Some(id) = id_after(&line, "agentId: ") {
-                    started.push(id.to_string());
+                    agents.push(id.to_string());
                 }
-            }
-        }
-        for marker in ["<task-id>", "stopped task: "] {
-            let mut rest = line.as_str();
-            while let Some(id) = id_after(rest, marker) {
-                finished.push(id.to_string());
-                rest = &rest[rest.find(marker).unwrap() + marker.len()..];
             }
         }
         if let Some(i) = line.find("\"name\":\"ScheduleWakeup\",\"input\":{") {
@@ -214,6 +220,7 @@ pub fn activity(file: &Path, since: SystemTime) -> Activity {
         }
     }
     a.pending_tasks = started.into_iter().filter(|id| !finished.contains(id)).collect();
+    a.pending_agents = agents.into_iter().filter(|id| !finished.contains(id)).collect();
     a.wakeup_pending = wake_at.map_or(false, |t| t > SystemTime::now()) ;
     a
 }
@@ -243,12 +250,15 @@ mod tests {
             r#"{"type":"user","timestamp":"2026-10-18T04:17:56Z","message":{"content":[{"type":"tool_result","content":"Command running in background with ID: bi2ws6te4. Output"}]}}"#,
             r#"{"type":"user","timestamp":"2026-10-18T04:18:00Z","message":{"content":[{"type":"tool_result","content":"Command running in background with ID: bdone1234. Output"}]}}"#,
             r#"{"type":"user","timestamp":"2026-10-18T04:20:00Z","message":{"content":"<task-notification> <task-id>bdone1234</task-id> <status>completed</status>"}}"#,
+            r#"{"type":"user","timestamp":"2026-10-18T04:20:30Z","message":{"content":[{"type":"tool_result","content":"Async agent launched successfully. agentId: a90896 (use SendMessage)"}]}}"#,
+            r#"{"type":"attachment","timestamp":"2026-10-18T04:20:50Z","attachment":{"content":"<task-notification> <task-id>a90896</task-id>"}}"#,
             r#"{"type":"assistant","timestamp":"2026-10-18T04:21:00Z","message":{"content":[{"type":"text","text":"ok"}]}}"#,
         ];
         std::fs::write(&f, lines.join("
 ")).unwrap();
         let a = activity(&f, SystemTime::UNIX_EPOCH);
         assert_eq!(a.pending_tasks, vec!["bi2ws6te4".to_string()]);
+        assert!(a.pending_agents.is_empty());
         assert!(!a.turn_open);
         let late = parse_stamp("2026-10-18T05:00:00Z").unwrap();
         assert!(activity(&f, late).pending_tasks.is_empty());
