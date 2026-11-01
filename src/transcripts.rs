@@ -56,11 +56,32 @@ fn json_string(s: &str) -> Option<String> {
 /// The current name of a conversation: the last `custom-title` record in
 /// its transcript, since a `/rename` appends a new one.
 fn title_of(file: &Path) -> Option<String> {
+    // Claude Code appends the title again as it goes, so the end of the
+    // file nearly always has it: reading only that keeps `list` fast with
+    // gigabytes of transcripts. The whole file only when the end has none.
+    use std::io::{Seek, SeekFrom};
+    const TAIL: u64 = 256 * 1024;
+    let mut f = std::fs::File::open(file).ok()?;
+    let len = f.metadata().ok()?.len();
+    if len > TAIL {
+        f.seek(SeekFrom::Start(len - TAIL)).ok()?;
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut buf).ok()?;
+        // The first line may be cut: skip it.
+        let text = String::from_utf8_lossy(&buf);
+        let text = text.split_once('\n').map_or("", |(_, t)| t);
+        if let Some(t) = last_title(text.lines().map(String::from)) {
+            return Some(t);
+        }
+        f.seek(SeekFrom::Start(0)).ok()?;
+    }
+    last_title(BufReader::new(f).lines().map_while(Result::ok))
+}
+
+fn last_title(lines: impl Iterator<Item = String>) -> Option<String> {
     const KEY: &str = "\"customTitle\":\"";
-    let f = std::fs::File::open(file).ok()?;
     let mut title = None;
-    for line in BufReader::new(f).lines() {
-        let Ok(line) = line else { continue };
+    for line in lines {
         if !line.contains("\"type\":\"custom-title\"") {
             continue;
         }
@@ -160,13 +181,12 @@ fn id_after<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
 /// older ones died with the process that ran them.
 pub fn activity(file: &Path, since: SystemTime) -> Activity {
     let mut a = Activity::default();
-    let Ok(f) = std::fs::File::open(file) else { return a };
+    let Some(lines) = lines_since(file, since) else { return a };
     let mut started: Vec<String> = Vec::new();
     let mut agents: Vec<String> = Vec::new();
     let mut finished: Vec<String> = Vec::new();
     let mut wake_at: Option<SystemTime> = None;
-    for line in BufReader::new(f).lines() {
-        let Ok(line) = line else { continue };
+    for line in lines {
         // Task notifications may only land in queue-operation or attachment
         // records, so these are read from every record.
         for marker in ["<task-id>", "stopped task: "] {
@@ -184,11 +204,7 @@ pub fn activity(file: &Path, since: SystemTime) -> Activity {
             .find("\"timestamp\":\"")
             .and_then(|i| parse_stamp(&line[i + 13..]));
         // Slash commands and other local bookkeeping get no answer.
-        let local = line.contains("<command-name>")
-            || line.contains("<local-command-stdout>")
-            || line.contains("\"isMeta\":true")
-            || line.contains("[Request interrupted by user");
-        if !local {
+        if is_message(&line) {
             a.last_message = ts.or(a.last_message);
             a.turn_open = user;
         }
@@ -223,6 +239,56 @@ pub fn activity(file: &Path, since: SystemTime) -> Activity {
     a.pending_agents = agents.into_iter().filter(|id| !finished.contains(id)).collect();
     a.wakeup_pending = wake_at.map_or(false, |t| t > SystemTime::now()) ;
     a
+}
+
+/// A message from either side, not local bookkeeping: what `activity`
+/// counts as the conversation's last message.
+fn is_message(line: &str) -> bool {
+    (line.contains("\"type\":\"user\"") || line.contains("\"type\":\"assistant\""))
+        && !(line.contains("<command-name>")
+            || line.contains("<local-command-stdout>")
+            || line.contains("\"isMeta\":true")
+            || line.contains("[Request interrupted by user"))
+}
+
+/// The lines of `file` from its last message before `since` to the end.
+/// What happened before that does not matter to `activity`: tasks of an
+/// earlier `claude` died with it. Read backwards from the end, since a
+/// long conversation's transcript runs to hundreds of MB.
+fn lines_since(file: &Path, since: SystemTime) -> Option<Vec<String>> {
+    use std::io::{Read, Seek, SeekFrom};
+    const BLOCK: u64 = 1 << 20;
+    let mut f = std::fs::File::open(file).ok()?;
+    let mut pos = f.metadata().ok()?.len();
+    let mut carry: Vec<u8> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    while pos > 0 {
+        let start = pos.saturating_sub(BLOCK);
+        let mut buf = vec![0u8; (pos - start) as usize];
+        f.seek(SeekFrom::Start(start)).ok()?;
+        f.read_exact(&mut buf).ok()?;
+        buf.extend_from_slice(&carry);
+        pos = start;
+        // Unless at the start of the file, the first line may be cut: it
+        // waits for the next block.
+        let mut parts: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
+        carry = if pos > 0 { parts.remove(0).to_vec() } else { Vec::new() };
+        for part in parts.into_iter().rev() {
+            let line = String::from_utf8_lossy(part).into_owned();
+            let old = is_message(&line)
+                && line
+                    .find("\"timestamp\":\"")
+                    .and_then(|i| parse_stamp(&line[i + 13..]))
+                    .map_or(false, |t| t < since);
+            lines.push(line);
+            if old {
+                lines.reverse();
+                return Some(lines);
+            }
+        }
+    }
+    lines.reverse();
+    Some(lines)
 }
 
 /// Path of the transcript of conversation `id` started in `dir`.
