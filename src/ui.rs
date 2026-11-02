@@ -61,6 +61,72 @@ fn running(prog: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Clicks the close button of the GNOME Console tabs titled `title`,
+/// through AT-SPI (python3-gi). kgx keeps a tab open, showing "process
+/// exited", when its command ends, and has no option or command to close
+/// one. Only called once that tab's `ccfarm view` has quit: on a live tab
+/// kgx would ask for confirmation.
+const CLOSE_TAB: &str = r#"
+import sys, gi
+gi.require_version('Atspi', '2.0')
+from gi.repository import Atspi
+def find(o, role, name=None):
+    out = []
+    def walk(o):
+        try:
+            r, n = o.get_role_name(), o.get_name()
+        except Exception:
+            return
+        if r == role and (name is None or n == name):
+            out.append(o)
+            return
+        for i in range(o.get_child_count()):
+            c = o.get_child_at_index(i)
+            if c:
+                walk(c)
+    walk(o)
+    return out
+d = Atspi.get_desktop(0)
+for i in range(d.get_child_count()):
+    app = d.get_child_at_index(i)
+    if app and app.get_name() == 'kgx':
+        for tab in find(app, 'page tab', sys.argv[1]):
+            for b in find(tab, 'button'):
+                a = b.get_action_iface()
+                if a:
+                    a.do_action(0)
+                    break
+"#;
+
+/// Closes the tab that showed `window` once its `ccfarm view` is gone.
+pub fn close_tab(title: &str, window: &str) {
+    if !desktop() || detect_terminal().as_deref() != Some("kgx") || !running("kgx") {
+        return;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while view_running(window) {
+        if std::time::Instant::now() > deadline {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let _ = Command::new("timeout")
+        .args(["20", "python3", "-I", "-c", CLOSE_TAB, title])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Some `ccfarm view <window>` is still running.
+fn view_running(window: &str) -> bool {
+    let Ok(dir) = std::fs::read_dir("/proc") else { return false };
+    dir.flatten().any(|e| {
+        let cmd = std::fs::read(e.path().join("cmdline")).unwrap_or_default();
+        let args: Vec<&[u8]> = cmd.split(|b| *b == 0).filter(|a| !a.is_empty()).collect();
+        args.len() >= 3 && args[args.len() - 2] == b"view" && args[args.len() - 1] == window.as_bytes()
+    })
+}
+
 fn launch(cmd: &mut Command) {
     let _ = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }

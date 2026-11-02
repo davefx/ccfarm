@@ -261,6 +261,7 @@ fn park(s: &Session, p: &Pane, parents: &HashMap<u32, u32>) -> Result<u64> {
     // Its tab goes too: `ccfarm view` quits when its view session is
     // killed, and the terminal closes the tab. Waking it opens it again.
     tmux::kill_session(&format!("view-{}", s.window));
+    crate::ui::close_tab(&s.name, &s.window);
     Ok(kib)
 }
 
