@@ -193,8 +193,12 @@ Suspending a session closes its tab (in GNOME Console, which keeps a tab
 open when its command ends, by clicking its close button through AT-SPI;
 needs python3-gi), and waking it up (`restore`, `send`,
 or typing in it) opens the tab again, at the end of the terminal window: no
-emulator takes a position for a new tab from the command line. `ccfarm up`
-opens no tab for suspended sessions. Tabs still open from before (or
+emulator takes a position for a new tab from the command line.
+
+Suspension survives a reboot: ccfarm remembers suspended sessions in
+`~/.local/state/ccfarm/suspended/`, and `ccfarm up` starts them suspended
+again, with no tab. `ccfarm up --all` starts every session awake instead,
+wakes up any suspended one, and opens all their tabs. Tabs still open from before (or
 attached through tmux) show a waiting screen instead: **type an order and
 press Enter** there, and the session wakes up and receives it as its next
 message once it has loaded. Enter alone just wakes it.

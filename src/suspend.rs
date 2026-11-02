@@ -258,11 +258,34 @@ pub fn suspend(names: &[String], idle: bool, force: bool) -> Result<()> {
 fn park(s: &Session, p: &Pane, parents: &HashMap<u32, u32>) -> Result<u64> {
     let kib = tree_kib(p.pid, parents);
     tmux::respawn_pane(&p.window_id, &crate::self_command(&["parked", &s.name]))?;
+    mark(&s.window, true);
     // Its tab goes too: `ccfarm view` quits when its view session is
     // killed, and the terminal closes the tab. Waking it opens it again.
     tmux::kill_session(&format!("view-{}", s.window));
     crate::ui::close_tab(&s.name, &s.window);
     Ok(kib)
+}
+
+/// Suspended sessions are remembered on disk, so that after a reboot `up`
+/// starts them suspended again instead of loading every one.
+fn mark_path(window: &str) -> std::path::PathBuf {
+    crate::paths::state_dir().join("suspended").join(window)
+}
+
+pub fn mark(window: &str, suspended: bool) {
+    let path = mark_path(window);
+    if suspended {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&path, "");
+    } else {
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+pub fn was_suspended(window: &str) -> bool {
+    mark_path(window).exists()
 }
 
 /// Windows of the farm that are suspended now, for `up` to open no tab.
@@ -290,6 +313,7 @@ pub fn restore(names: &[String], all: bool) -> Result<()> {
             continue;
         }
         tmux::respawn_pane(&p.window_id, &crate::keepalive_command(s))?;
+        mark(&s.window, false);
         println!("{}: restored.", s.name);
         // Its tab was closed on suspending: back it comes, at the end of the
         // terminal window (no emulator takes a position for a new tab).

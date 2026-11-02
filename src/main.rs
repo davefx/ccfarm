@@ -41,6 +41,9 @@ enum Cmd {
         /// Alternative sessions file
         #[arg(short, long)]
         file: Option<PathBuf>,
+        /// Start and open every session, waking up the suspended ones too
+        #[arg(long)]
+        all: bool,
     },
     /// Attach to tmux, evicting the previous client
     #[command(alias = "a")]
@@ -119,7 +122,7 @@ fn tmux_session() -> String {
 
 fn main() {
     let cli = Cli::parse();
-    let cmd = cli.cmd.unwrap_or(Cmd::Up { file: None });
+    let cmd = cli.cmd.unwrap_or(Cmd::Up { file: None, all: false });
     if let Err(e) = execute(cmd) {
         eprintln!("{}", e);
         std::process::exit(1);
@@ -128,7 +131,7 @@ fn main() {
 
 fn execute(cmd: Cmd) -> Result<()> {
     match cmd {
-        Cmd::Up { file } => up(file.as_deref()),
+        Cmd::Up { file, all } => up(file.as_deref(), all),
         Cmd::Attach { name } => attach(name.as_deref()),
         Cmd::List => suspend::list(),
         Cmd::Stop { name } => stop(&name),
@@ -178,7 +181,7 @@ fn shell_quote(s: &str) -> String {
 // ===================================================================
 // up
 // ===================================================================
-fn up(file: Option<&std::path::Path>) -> Result<()> {
+fn up(file: Option<&std::path::Path>, all: bool) -> Result<()> {
     if !tmux::available() {
         bail!("tmux is not installed");
     }
@@ -209,7 +212,13 @@ fn up(file: Option<&std::path::Path>) -> Result<()> {
         if existing.contains(&s.window) {
             continue; // already running: left alone
         }
-        let command = keepalive_command(s);
+        // Suspended when last seen (before a reboot, say): it stays so.
+        let command = if !all && suspend::was_suspended(&s.window) {
+            self_command(&["parked", &s.name])
+        } else {
+            suspend::mark(&s.window, false);
+            keepalive_command(s)
+        };
         if fresh {
             tmux::new_session_detached(&session, &s.window, &s.dir, &command)?;
             fresh = false;
@@ -243,7 +252,11 @@ fn up(file: Option<&std::path::Path>) -> Result<()> {
     }
     drop(lock);
 
-    // Suspended sessions get their tab back when they wake up.
+    // Suspended sessions get their tab back when they wake up; --all
+    // wakes them now (restore opens their tabs).
+    if all && !suspend::suspended_windows().is_empty() {
+        suspend::restore(&[], true)?;
+    }
     let suspended = suspend::suspended_windows();
     let tabs: Vec<ui::Tab> = sessions
         .iter()
