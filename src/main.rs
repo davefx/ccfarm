@@ -243,8 +243,11 @@ fn up(file: Option<&std::path::Path>) -> Result<()> {
     }
     drop(lock);
 
+    // Suspended sessions get their tab back when they wake up.
+    let suspended = suspend::suspended_windows();
     let tabs: Vec<ui::Tab> = sessions
         .iter()
+        .filter(|s| !suspended.contains(&s.window))
         .map(|s| ui::Tab { title: s.name.clone(), window: s.window.clone() })
         .collect();
     if ui::mode() == ui::Mode::Gui {

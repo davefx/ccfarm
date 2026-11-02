@@ -25,6 +25,12 @@ pub fn mode() -> Mode {
     }
 }
 
+/// A desktop to open tabs on, whoever asks: a session woken up from an
+/// SSH connection (or by mem-watch) gets its tab back all the same.
+pub fn desktop() -> bool {
+    std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok()
+}
+
 fn exists(prog: &str) -> bool {
     Command::new("sh")
         .args(["-c", &format!("command -v {}", prog)])
@@ -44,6 +50,15 @@ pub fn detect_terminal() -> Option<String> {
         cands.push(t.to_string());
     }
     cands.into_iter().find(|t| exists(t))
+}
+
+fn running(prog: &str) -> bool {
+    Command::new("pgrep")
+        .args(["-x", "-u", &unsafe { libc::getuid() }.to_string(), prog])
+        .stdout(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn launch(cmd: &mut Command) {
@@ -116,7 +131,8 @@ pub fn open_tabs(term: &str, tabs: &[Tab]) {
         return;
     }
 
-    let mut first = true;
+    // With kgx already open, even the first tab joins its window.
+    let mut first = !(term == "kgx" && running("kgx"));
     for t in &pending {
         let w = t.window.as_str();
         let title = t.title.as_str();

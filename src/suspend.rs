@@ -258,7 +258,19 @@ pub fn suspend(names: &[String], idle: bool, force: bool) -> Result<()> {
 fn park(s: &Session, p: &Pane, parents: &HashMap<u32, u32>) -> Result<u64> {
     let kib = tree_kib(p.pid, parents);
     tmux::respawn_pane(&p.window_id, &crate::self_command(&["parked", &s.name]))?;
+    // Its tab goes too: `ccfarm view` quits when its view session is
+    // killed, and the terminal closes the tab. Waking it opens it again.
+    tmux::kill_session(&format!("view-{}", s.window));
     Ok(kib)
+}
+
+/// Windows of the farm that are suspended now, for `up` to open no tab.
+pub fn suspended_windows() -> Vec<String> {
+    tmux::panes_full(&crate::tmux_session())
+        .into_iter()
+        .filter(is_suspended)
+        .map(|p| p.window_name)
+        .collect()
 }
 
 pub fn restore(names: &[String], all: bool) -> Result<()> {
@@ -278,6 +290,13 @@ pub fn restore(names: &[String], all: bool) -> Result<()> {
         }
         tmux::respawn_pane(&p.window_id, &crate::keepalive_command(s))?;
         println!("{}: restored.", s.name);
+        // Its tab was closed on suspending: back it comes, at the end of the
+        // terminal window (no emulator takes a position for a new tab).
+        if crate::ui::desktop() {
+            if let Some(term) = crate::ui::detect_terminal() {
+                crate::ui::open_tabs(&term, &[crate::ui::Tab { title: s.name.clone(), window: s.window.clone() }]);
+            }
+        }
     }
     Ok(())
 }

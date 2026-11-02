@@ -189,9 +189,13 @@ never suspends itself. Busy means any of:
 The screen checks depend on Claude Code's wording, like rc-watch; the
 transcript ones on its record format.
 
-In the tab of a suspended session, **type an order and press Enter**: the
-session wakes up and receives it as its next message once it has loaded.
-Enter alone just wakes it.
+Suspending a session closes its tab, and waking it up (`restore`, `send`,
+or typing in it) opens the tab again, at the end of the terminal window: no
+emulator takes a position for a new tab from the command line. `ccfarm up`
+opens no tab for suspended sessions. Tabs still open from before (or
+attached through tmux) show a waiting screen instead: **type an order and
+press Enter** there, and the session wakes up and receives it as its next
+message once it has loaded. Enter alone just wakes it.
 
 Because only tmux is involved, this works on windows started by an older
 ccfarm too.
