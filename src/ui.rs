@@ -40,7 +40,7 @@ pub fn detect_terminal() -> Option<String> {
     if let Ok(t) = std::env::var("CCFARM_TERM") {
         cands.push(t);
     }
-    for t in ["gnome-terminal", "konsole", "xfce4-terminal", "kitty"] {
+    for t in ["kgx", "gnome-terminal", "konsole", "xfce4-terminal", "kitty"] {
         cands.push(t.to_string());
     }
     cands.into_iter().find(|t| exists(t))
@@ -121,6 +121,20 @@ pub fn open_tabs(term: &str, tabs: &[Tab]) {
         let w = t.window.as_str();
         let title = t.title.as_str();
         match term {
+            // GNOME Console: the first call opens a new window and `--tab`
+            // adds to the focused one, which by then is that new window.
+            "kgx" => {
+                let mut c = Command::new("kgx");
+                if !first {
+                    c.arg("--tab");
+                }
+                c.args(["-T", title, "--", &exe, "view", w]);
+                launch(&mut c);
+                if first {
+                    // Let the new window appear and take focus.
+                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                }
+            }
             "konsole" => {
                 let mut c = Command::new("konsole");
                 if !first {
@@ -163,8 +177,8 @@ pub fn open_tabs(term: &str, tabs: &[Tab]) {
             }
         }
         first = false;
-        // konsole/xfce4 add the tab to the most recently focused window; the
-        // pause reduces the races.
+        // kgx/konsole/xfce4 add the tab to the most recently focused window;
+        // the pause reduces the races.
         std::thread::sleep(std::time::Duration::from_millis(400));
     }
 }

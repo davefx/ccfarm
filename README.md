@@ -114,8 +114,9 @@ Claude processes **always** live inside tmux. The interface depends on where
   *view* (a grouped tmux session) onto its window: closing it kills nothing,
   and the work stays reachable over SSH from somewhere else.
 
-Forceable with `CCFARM_UI=tmux|gui`. Supported emulators: gnome-terminal,
-konsole, xfce4-terminal, kitty (`CCFARM_TERM` to impose one).
+Forceable with `CCFARM_UI=tmux|gui`. Supported emulators, in order of
+preference: kgx (GNOME Console), gnome-terminal, konsole, xfce4-terminal,
+kitty (`CCFARM_TERM` to impose one).
 
 Running it twice duplicates nothing: there is a file lock, only the missing
 windows are created, and no tabs are opened onto sessions that already have
@@ -305,7 +306,7 @@ session, so as not to steal it back.
 
 ## Known limitations
 
-- konsole and xfce4-terminal add each tab to the most recently focused
+- kgx, konsole and xfce4-terminal add each tab to the most recently focused
   window; there is a 400 ms pause between openings, but if you switch windows
   during the process some tab may end up where it should not. gnome-terminal
   and kitty are deterministic: gnome-terminal builds the whole window in a
