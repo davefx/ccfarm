@@ -44,6 +44,9 @@ enum Cmd {
         /// Start and open every session, waking up the suspended ones too
         #[arg(long)]
         all: bool,
+        /// Only start the processes: open no tabs and do not attach
+        #[arg(long)]
+        no_tabs: bool,
     },
     /// Attach to tmux, evicting the previous client
     #[command(alias = "a")]
@@ -122,7 +125,7 @@ fn tmux_session() -> String {
 
 fn main() {
     let cli = Cli::parse();
-    let cmd = cli.cmd.unwrap_or(Cmd::Up { file: None, all: false });
+    let cmd = cli.cmd.unwrap_or(Cmd::Up { file: None, all: false, no_tabs: false });
     if let Err(e) = execute(cmd) {
         eprintln!("{}", e);
         std::process::exit(1);
@@ -131,12 +134,12 @@ fn main() {
 
 fn execute(cmd: Cmd) -> Result<()> {
     match cmd {
-        Cmd::Up { file, all } => up(file.as_deref(), all),
+        Cmd::Up { file, all, no_tabs } => up(file.as_deref(), all, !no_tabs),
         Cmd::Attach { name } => attach(name.as_deref()),
         Cmd::List => suspend::list(),
         Cmd::Stop { name } => stop(&name),
         Cmd::Suspend { names, idle, force } => suspend::suspend(&names, idle, force),
-        Cmd::Restore { names, all } => suspend::restore(&names, all),
+        Cmd::Restore { names, all } => suspend::restore(&names, all, true),
         Cmd::Parked { name } => suspend::parked(&name),
         Cmd::Memwatch => suspend::memwatch(),
         Cmd::Send { name, text } => suspend::send(&name, &text),
@@ -181,7 +184,7 @@ fn shell_quote(s: &str) -> String {
 // ===================================================================
 // up
 // ===================================================================
-fn up(file: Option<&std::path::Path>, all: bool) -> Result<()> {
+fn up(file: Option<&std::path::Path>, all: bool, tabs: bool) -> Result<()> {
     if !tmux::available() {
         bail!("tmux is not installed");
     }
@@ -255,7 +258,11 @@ fn up(file: Option<&std::path::Path>, all: bool) -> Result<()> {
     // Suspended sessions get their tab back when they wake up; --all
     // wakes them now (restore opens their tabs).
     if all && !suspend::suspended_windows().is_empty() {
-        suspend::restore(&[], true)?;
+        suspend::restore(&[], true, tabs)?;
+    }
+    if !tabs {
+        println!("Sessions running in tmux '{}'. Tabs: ccfarm up; terminal: ccfarm attach", session);
+        return Ok(());
     }
     let suspended = suspend::suspended_windows();
     let tabs: Vec<ui::Tab> = sessions

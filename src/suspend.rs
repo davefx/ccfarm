@@ -297,7 +297,7 @@ pub fn suspended_windows() -> Vec<String> {
         .collect()
 }
 
-pub fn restore(names: &[String], all: bool) -> Result<()> {
+pub fn restore(names: &[String], all: bool, tabs: bool) -> Result<()> {
     if names.is_empty() && !all {
         bail!("name the sessions to restore, or pass --all");
     }
@@ -317,7 +317,7 @@ pub fn restore(names: &[String], all: bool) -> Result<()> {
         println!("{}: restored.", s.name);
         // Its tab was closed on suspending: back it comes, at the end of the
         // terminal window (no emulator takes a position for a new tab).
-        if crate::ui::desktop() {
+        if tabs && crate::ui::desktop() {
             if let Some(term) = crate::ui::detect_terminal() {
                 crate::ui::open_tabs(&term, &[crate::ui::Tab { title: s.name.clone(), window: s.window.clone() }]);
             }
@@ -517,7 +517,7 @@ pub fn parked(name: &str) -> Result<()> {
             }
             println!("[ccfarm] Waking up; the order follows once it has loaded.");
         }
-        if let Err(e) = restore(&[name.to_string()], false) {
+        if let Err(e) = restore(&[name.to_string()], false, true) {
             eprintln!("[ccfarm] {}", e);
         }
     }

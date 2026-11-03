@@ -21,6 +21,7 @@ cargo resolve freely.
 | --- | --- |
 | `ccfarm` | Starts or resumes every session in the file |
 | `ccfarm up -f other.toml` | Same, with a different file |
+| `ccfarm up --no-tabs` | Only starts what is missing: opens no tabs and does not attach |
 | `ccfarm attach [name]` | Attaches to tmux, **evicting** the previous client |
 | `ccfarm list` | State of the sessions |
 | `ccfarm stop <name>` | Closes a session and its restart loop |
