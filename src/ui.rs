@@ -64,10 +64,12 @@ fn running(prog: &str) -> bool {
 /// Clicks the close button of the GNOME Console tabs titled `title`,
 /// through AT-SPI (python3-gi). kgx keeps a tab open, showing "process
 /// exited", when its command ends, and has no option or command to close
-/// one. Only called once that tab's `ccfarm view` has quit: on a live tab
-/// kgx would ask for confirmation.
+/// one. The tabs are found while their title is still the session's name:
+/// once the process exits kgx renames them "Tab N". The script then waits
+/// for a line on stdin, sent once the tab's `ccfarm view` has quit (on a
+/// live tab kgx would ask for confirmation), and clicks.
 const CLOSE_TAB: &str = r#"
-import sys, gi
+import sys, time, gi
 gi.require_version('Atspi', '2.0')
 from gi.repository import Atspi
 def find(o, role, name=None):
@@ -86,44 +88,98 @@ def find(o, role, name=None):
                 walk(c)
     walk(o)
     return out
-d = Atspi.get_desktop(0)
-for i in range(d.get_child_count()):
-    app = d.get_child_at_index(i)
-    if app and app.get_name() == 'kgx':
-        for tab in find(app, 'page tab', sys.argv[1]):
-            for b in find(tab, 'button'):
+def tabs():
+    out = []
+    d = Atspi.get_desktop(0)
+    for i in range(d.get_child_count()):
+        app = d.get_child_at_index(i)
+        if app and app.get_name() == 'kgx':
+            out += find(app, 'page tab')
+    return out
+before = tabs()
+mine = [i for i, t in enumerate(before) if t.get_name() == sys.argv[1]]
+print(len(mine), flush=True)
+# kgx replaces a tab's accessible when it renames it, so it is found
+# again by position, provided no other tab came or went meanwhile.
+if mine and sys.stdin.readline():
+    after = tabs()
+    if len(after) == len(before):
+        for i in mine:
+            for b in find(after[i], 'button'):
                 a = b.get_action_iface()
                 if a:
                     a.do_action(0)
                     break
+    # kgx may still list the view's tmux client as running, long after it
+    # quit, and ask before closing: confirm, but only a dialog whose
+    # processes are all that very client.
+    want = '=view-' + sys.argv[2]
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        done = False
+        d = Atspi.get_desktop(0)
+        for i in range(d.get_child_count()):
+            app = d.get_child_at_index(i)
+            if not (app and app.get_name() == 'kgx'):
+                continue
+            for al in find(app, 'alert'):
+                items = [x.get_name().split() for x in find(al, 'list item')]
+                if items and all(want in it for it in items):
+                    buttons = find(al, 'button')
+                    a = buttons[-1].get_action_iface() if buttons else None
+                    if a:
+                        a.do_action(0)
+                        done = True
+        if done:
+            break
+        time.sleep(0.2)
 "#;
 
-/// Closes the tab that showed `window` once its `ccfarm view` is gone.
-pub fn close_tab(title: &str, window: &str) {
+/// Closes the tab that shows `window`: kills its view session, which makes
+/// `ccfarm view` quit, and with GNOME Console also closes the tab it
+/// leaves behind.
+pub fn close_view(title: &str, window: &str) {
+    let kill = || {
+        tmux::kill_session(&format!("view-{}", window));
+    };
     if !desktop() || detect_terminal().as_deref() != Some("kgx") || !running("kgx") {
-        return;
+        return kill();
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while view_running(window) {
-        if std::time::Instant::now() > deadline {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    let _ = Command::new("timeout")
-        .args(["20", "python3", "-I", "-c", CLOSE_TAB, title])
-        .stdout(Stdio::null())
+    use std::io::{BufRead, Write};
+    let child = Command::new("timeout")
+        .args(["20", "python3", "-I", "-c", CLOSE_TAB, title, window])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .status();
+        .spawn();
+    let Ok(mut child) = child else { return kill() };
+    let mut line = String::new();
+    if let Some(out) = child.stdout.take() {
+        let _ = std::io::BufReader::new(out).read_line(&mut line);
+    }
+    kill();
+    if line.trim().parse::<u32>().unwrap_or(0) > 0 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while view_running(window) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(b"go\n");
+        }
+    }
+    drop(child.stdin.take());
+    let _ = child.wait();
 }
 
-/// Some `ccfarm view <window>` is still running.
+/// Some `ccfarm view <window>`, or its tmux client, is still running.
 fn view_running(window: &str) -> bool {
     let Ok(dir) = std::fs::read_dir("/proc") else { return false };
     dir.flatten().any(|e| {
         let cmd = std::fs::read(e.path().join("cmdline")).unwrap_or_default();
         let args: Vec<&[u8]> = cmd.split(|b| *b == 0).filter(|a| !a.is_empty()).collect();
-        args.len() >= 3 && args[args.len() - 2] == b"view" && args[args.len() - 1] == window.as_bytes()
+        let client = format!("=view-{}", window);
+        (args.len() >= 3 && args[args.len() - 2] == b"view" && args[args.len() - 1] == window.as_bytes())
+            || (args.contains(&&b"attach"[..]) && args.last() == Some(&client.as_bytes()))
     })
 }
 

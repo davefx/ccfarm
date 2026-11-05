@@ -352,7 +352,7 @@ fn stop(name: &str) -> Result<()> {
     if tmux::window_id(&session, &w).is_some() {
         // Its tab first: with the window gone first, the tab would wait
         // for it to come back.
-        tmux::kill_session(&format!("view-{}", w));
+        ui::close_view(name, &w);
         tmux::kill_window(&session, &w);
         println!("Closed '{}'.", w);
         Ok(())
