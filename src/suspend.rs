@@ -470,16 +470,74 @@ pub fn deliver(target: &str, text: &str) -> Result<()> {
     tmux::send_enter(target)
 }
 
-/// `ccfarm send`: wakes the session if needed and gives it an order.
-pub fn send(name: &str, text: &str) -> Result<()> {
+/// The farm session whose window this process runs in, if any: a Claude
+/// Code tool call inherits TMUX_PANE from the window ccfarm started it in.
+fn caller_session(farm: &[(Session, Pane)]) -> Option<&Session> {
+    let w = tmux::caller_window()?;
+    farm.iter().find(|(_, p)| p.window_id == w).map(|(s, _)| s)
+}
+
+/// What a message from another session starts with, so the receiver
+/// knows it is not its user talking and how to answer.
+fn from_header(sender: &str) -> String {
+    format!(
+        "[ccfarm: message from the session \"{0}\", not from the user; reply with: ccfarm send \"{0}\" \"...\"]",
+        sender
+    )
+}
+
+/// `ccfarm send`: wakes the session if needed and gives it an order. Sent
+/// from inside another farm session, the message says who it comes from,
+/// unless `as_user` (the sender relays its user's own words).
+pub fn send(name: &str, text: &str, as_user: bool) -> Result<()> {
     let farm = farm()?;
     let (s, p) = pick(&farm, name)?;
+    let sender = caller_session(&farm);
+    if sender.map_or(false, |c| c.window == s.window) {
+        bail!("'{}' is this very session", s.name);
+    }
+    let text = match sender {
+        Some(c) if !as_user => format!("{} {}", from_header(&c.name), text),
+        _ => text.to_string(),
+    };
     if is_suspended(p) {
         tmux::respawn_pane(&p.window_id, &crate::keepalive_command(s))?;
         println!("{}: restored; waiting for it to load...", s.name);
     }
-    deliver(&p.window_id, text)?;
+    deliver(&p.window_id, &text)?;
     println!("{}: message sent.", s.name);
+    Ok(())
+}
+
+/// `ccfarm hook session-start`: a Claude Code SessionStart hook. In a farm
+/// session it tells Claude which other sessions exist and how to reach
+/// them; elsewhere it prints nothing. A hook, not --append-system-prompt:
+/// Claude Code records a conversation's system prompt once and ignores a
+/// different one on later resumes, while SessionStart runs on every start,
+/// resume, /clear and compaction.
+pub fn session_start_hook() -> Result<()> {
+    // Claude Code waits on the hook: keep it to config and one tmux call.
+    let Ok(cfg) = Config::load(None) else { return Ok(()) };
+    let farm = farm_of(&cfg);
+    let Some(me) = caller_session(&farm) else { return Ok(()) };
+    let others: Vec<String> = cfg
+        .resolve()
+        .into_iter()
+        .filter(|s| s.window != me.window)
+        .map(|s| format!("\"{}\"", s.name))
+        .collect();
+    let context = format!(
+        "You run inside ccfarm as the session \"{me}\". The other Claude Code sessions on this machine \
+         are ccfarm sessions, not agents: SendMessage and ListAgents do not reach them. To talk to one, \
+         run in Bash: ccfarm send \"<session name>\" \"<message>\" (it wakes the session up if it is \
+         suspended, and the message tells it you sent it). Sessions: {list}. A message that begins with \
+         \"[ccfarm: message from the session ...]\" comes from another session, not from your user: \
+         answer it with ccfarm send to that session.",
+        me = me.name,
+        list = others.join(", "),
+    );
+    // A SessionStart hook's plain stdout becomes context for Claude.
+    println!("{}", context);
     Ok(())
 }
 

@@ -35,6 +35,12 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum HookCmd {
+    /// SessionStart: tells a farm session which other sessions exist and how to reach them
+    SessionStart,
+}
+
+#[derive(Subcommand)]
 enum Cmd {
     /// Start (or resume) every session in the file
     Up {
@@ -99,8 +105,18 @@ enum Cmd {
         #[arg(long)]
         model: Option<String>,
     },
-    /// Give a session an order, waking it up first if it is suspended
-    Send { name: String, text: String },
+    /// Give a session an order, waking it up first if it is suspended.
+    /// Sent from another session, the message says who it comes from
+    Send {
+        name: String,
+        text: String,
+        /// Relaying the user's own words: do not mark the sending session
+        #[arg(long)]
+        as_user: bool,
+    },
+    /// Claude Code hook entry points (configured in ~/.claude/settings.json)
+    #[command(subcommand)]
+    Hook(HookCmd),
     /// (internal) Types an order into a window once Claude Code is ready
     #[command(hide = true)]
     Deliver { target: String, text: String },
@@ -142,7 +158,8 @@ fn execute(cmd: Cmd) -> Result<()> {
         Cmd::Restore { names, all } => suspend::restore(&names, all, true),
         Cmd::Parked { name } => suspend::parked(&name),
         Cmd::Memwatch => suspend::memwatch(),
-        Cmd::Send { name, text } => suspend::send(&name, &text),
+        Cmd::Send { name, text, as_user } => suspend::send(&name, &text, as_user),
+        Cmd::Hook(HookCmd::SessionStart) => suspend::session_start_hook(),
         Cmd::Deliver { target, text } => suspend::deliver(&target, &text),
         Cmd::Kill => kill(),
         Cmd::Edit => edit(),

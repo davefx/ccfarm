@@ -173,7 +173,7 @@ window; the conversation is already on disk. Restoring resumes it by id.
 | `ccfarm suspend <name>...` | Suspends those sessions |
 | `ccfarm suspend --idle` | Suspends every idle session |
 | `ccfarm restore <name>...` / `--all` | Brings them back |
-| `ccfarm send <name> "<text>"` | Gives a session an order, waking it up first if needed |
+| `ccfarm send <name> "<text>"` | Gives a session an order, waking it up first if needed; from another session, it says who sends it (`--as-user` to relay your words) |
 
 Busy sessions are left alone unless you pass `--force`, and a session
 never suspends itself. Busy means any of:
@@ -242,7 +242,31 @@ and suspending on them only takes sessions away for nothing.
 the `claude` process, so the session disappears from the phone and nothing
 sent from there can wake it. Keep one session with `auto_suspend = false` as
 a concierge: from the phone, ask it to `ccfarm send <name> "..."`, and the
-target wakes up, gets the order and is back on Remote Control.
+target wakes up, gets the order and is back on Remote Control. The concierge
+relays your words with `--as-user`, so they arrive as yours.
+
+### Sessions talking to each other
+
+A session can ask another one for something with `ccfarm send` too. Sent
+from inside a farm session, the message starts with
+`[ccfarm: message from the session "<name>", not from the user; reply with: ccfarm send "<name>" "..."]`,
+so the receiver knows who is asking and how to answer.
+
+For sessions to know this without being told, add the SessionStart hook to
+`~/.claude/settings.json`. In a farm session it lists the other sessions and
+explains how to reach them; anywhere else it prints nothing:
+
+```json
+"hooks": {
+  "SessionStart": [
+    { "matcher": "", "hooks": [{ "type": "command", "command": "ccfarm hook session-start" }] }
+  ]
+}
+```
+
+It takes effect when a session starts, resumes, is cleared or compacts. A
+system prompt would not do: Claude Code records a conversation's system
+prompt once and keeps it on later resumes.
 
 ### ssh-agent
 
