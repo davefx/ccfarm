@@ -173,7 +173,7 @@ window; the conversation is already on disk. Restoring resumes it by id.
 | `ccfarm suspend <name>...` | Suspends those sessions |
 | `ccfarm suspend --idle` | Suspends every idle session |
 | `ccfarm restore <name>...` / `--all` | Brings them back |
-| `ccfarm send <name> "<text>"` | Gives a session an order, waking it up first if needed; from another session, it says who sends it (`--as-user` to relay your words) |
+| `ccfarm send <name> "<text>"` | Gives a session an order, waking it up first if needed; from another session, it says who sends it (`--as-user` to relay your words). A busy session gets it queued: `send` returns within a few seconds either way |
 
 Busy sessions are left alone unless you pass `--force`, and a session
 never suspends itself. Busy means any of:
@@ -251,6 +251,15 @@ A session can ask another one for something with `ccfarm send` too. Sent
 from inside a farm session, the message starts with
 `[ccfarm: message from the session "<name>", not from the user; reply with: ccfarm send "<name>" "..."]`,
 so the receiver knows who is asking and how to answer.
+
+A session that is busy, still loading or suspended does not lose the
+message, and the sender is not held up: `send` leaves it in the session's
+outbox (`~/.local/state/ccfarm/outbox/<window>/`) and returns within about
+four seconds, saying whether it was delivered or queued. A background
+worker started from the tmux server types queued messages in, oldest
+first, as soon as the session is free, waking it up if it was suspended.
+Messages not delivered within 24 hours are dropped. Both deliveries and
+drops are logged in `~/.local/state/ccfarm/outbox.log`.
 
 For sessions to know this without being told, add the SessionStart hook to
 `~/.claude/settings.json`. In a farm session it lists the other sessions and

@@ -8,10 +8,12 @@
 //! on windows started by older ccfarm builds, since only tmux is involved.
 
 use crate::config::{self, Config, Session};
+use crate::outbox;
 use crate::transcripts;
 use crate::tmux::{self, Pane};
 use anyhow::{bail, Result};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// The pane runs the waiting screen rather than the restart loop.
 fn is_suspended(p: &Pane) -> bool {
@@ -447,7 +449,6 @@ fn is_ready(target: &str) -> bool {
 /// Types `text` into the session in `target` once Claude Code is ready for
 /// it (a restored session takes a few seconds to load its conversation).
 pub fn deliver(target: &str, text: &str) -> Result<()> {
-    use std::time::{Duration, Instant};
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut ready_since: Option<Instant> = None;
     loop {
@@ -465,9 +466,7 @@ pub fn deliver(target: &str, text: &str) -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    tmux::send_literal(target, &text.replace(['\r', '\n'], " "))?;
-    std::thread::sleep(Duration::from_millis(300));
-    tmux::send_enter(target)
+    type_in(target, text)
 }
 
 /// The farm session whose window this process runs in, if any: a Claude
@@ -486,9 +485,15 @@ fn from_header(sender: &str) -> String {
     )
 }
 
+/// How long `send` waits to report a delivery before leaving the message
+/// queued: a sender must never be held up by a busy session.
+const SEND_WAIT: Duration = Duration::from_secs(4);
+
 /// `ccfarm send`: wakes the session if needed and gives it an order. Sent
 /// from inside another farm session, the message says who it comes from,
-/// unless `as_user` (the sender relays its user's own words).
+/// unless `as_user` (the sender relays its user's own words). The message
+/// goes through the session's outbox: if the session is busy or still
+/// loading, it stays queued and is typed in as soon as the session is free.
 pub fn send(name: &str, text: &str, as_user: bool) -> Result<()> {
     let farm = farm()?;
     let (s, p) = pick(&farm, name)?;
@@ -502,11 +507,108 @@ pub fn send(name: &str, text: &str, as_user: bool) -> Result<()> {
     };
     if is_suspended(p) {
         tmux::respawn_pane(&p.window_id, &crate::keepalive_command(s))?;
-        println!("{}: restored; waiting for it to load...", s.name);
+        println!("{}: restored.", s.name);
     }
-    deliver(&p.window_id, &text)?;
-    println!("{}: message sent.", s.name);
+    let msg = outbox::enqueue(&s.window, &text)?;
+    start_flush(&s.window)?;
+    let t = Instant::now();
+    while t.elapsed() < SEND_WAIT {
+        if !msg.exists() {
+            println!("{}: message sent.", s.name);
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    println!(
+        "{}: not free yet; message queued, it will be typed in as soon as the session is free.",
+        s.name
+    );
     Ok(())
+}
+
+/// Starts the outbox worker of `window` from the tmux server, so it
+/// outlives the sender (and a parked window that restoring kills).
+fn start_flush(window: &str) -> Result<()> {
+    tmux::run_background(&crate::self_command(&["flush", window]))
+}
+
+/// `ccfarm flush <window>`: types the session's queued messages in, oldest
+/// first, each once the session is free; wakes it up if it is suspended.
+/// Runs detached, so it never fails out loud: tmux would show the error on
+/// whatever screen is active. It logs instead.
+pub fn flush(window: &str) -> Result<()> {
+    let Some(mut lock) = outbox::lock(window) else { return Ok(()) }; // another worker has it
+    let mut ready_since: Option<(String, Instant)> = None;
+    loop {
+        let queue = outbox::pending(window);
+        let Some(msg) = queue.first() else {
+            drop(lock);
+            // Something queued between the look and the unlock would wait
+            // for a worker that is gone: look once more.
+            if outbox::pending(window).is_empty() {
+                return Ok(());
+            }
+            match outbox::lock(window) {
+                Some(l) => lock = l,
+                None => return Ok(()),
+            }
+            continue;
+        };
+        if outbox::age(msg) > outbox::MAX_AGE {
+            outbox::log(&format!("{}: dropped a message not delivered in 24 h: {}", window, msg.display()));
+            let _ = std::fs::remove_file(msg);
+            continue;
+        }
+        // The window can be gone for a moment (restarting, being renamed)
+        // or for good; the age limit covers the second case.
+        let farm = farm().unwrap_or_default();
+        let Some((s, p)) = farm.iter().find(|(s, _)| s.window == window) else {
+            std::thread::sleep(Duration::from_secs(5));
+            continue;
+        };
+        if is_suspended(p) {
+            if tmux::respawn_pane(&p.window_id, &crate::keepalive_command(s)).is_ok() {
+                outbox::log(&format!("{}: restored to deliver a queued message", s.name));
+            }
+            std::thread::sleep(Duration::from_secs(2));
+            continue;
+        }
+        // Ready on looks 1.5 s apart, so a half-drawn screen does not count.
+        if !is_ready(&p.window_id) {
+            ready_since = None;
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+        let since = match &ready_since {
+            Some((w, t)) if *w == p.window_id => *t,
+            _ => {
+                let now = Instant::now();
+                ready_since = Some((p.window_id.clone(), now));
+                now
+            }
+        };
+        if since.elapsed() < Duration::from_millis(1500) {
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(msg) else {
+            let _ = std::fs::remove_file(msg);
+            continue;
+        };
+        if type_in(&p.window_id, &text).is_ok() {
+            let _ = std::fs::remove_file(msg);
+            outbox::log(&format!("{}: delivered a queued message", s.name));
+        }
+        // Give Claude Code time to show it is busy before the next one.
+        ready_since = None;
+        std::thread::sleep(Duration::from_secs(3));
+    }
+}
+
+fn type_in(target: &str, text: &str) -> Result<()> {
+    tmux::send_literal(target, &text.replace(['\r', '\n'], " "))?;
+    std::thread::sleep(Duration::from_millis(300));
+    tmux::send_enter(target)
 }
 
 /// `ccfarm hook session-start`: a Claude Code SessionStart hook. In a farm
@@ -530,7 +632,8 @@ pub fn session_start_hook() -> Result<()> {
         "You run inside ccfarm as the session \"{me}\". The other Claude Code sessions on this machine \
          are ccfarm sessions, not agents: SendMessage and ListAgents do not reach them. To talk to one, \
          run in Bash: ccfarm send \"<session name>\" \"<message>\" (it wakes the session up if it is \
-         suspended, and the message tells it you sent it). Sessions: {list}. A message that begins with \
+         suspended, queues the message if the session is busy and returns at once, and the message tells \
+         it you sent it). Do not wait or retry after a \"queued\" answer: it arrives when the session is free. Sessions: {list}. A message that begins with \
          \"[ccfarm: message from the session ...]\" comes from another session, not from your user: \
          answer it with ccfarm send to that session.",
         me = me.name,
@@ -564,11 +667,10 @@ pub fn parked(name: &str) -> Result<()> {
         }
         let order = line.trim();
         if !order.is_empty() {
-            // Restoring kills this process, so the delivery runs from the
-            // tmux server, which outlives it.
-            let target = tmux::caller_window().unwrap_or_default();
-            let cmd = crate::self_command(&["deliver", &target, order]);
-            if let Err(e) = tmux::run_background(&cmd) {
+            // Queued: restoring kills this process, and the outbox worker
+            // runs from the tmux server, which outlives it.
+            let window = config::sanitize_window(name);
+            if let Err(e) = outbox::enqueue(&window, order).and_then(|_| start_flush(&window)) {
                 eprintln!("[ccfarm] {}", e);
                 continue;
             }

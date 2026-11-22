@@ -8,6 +8,7 @@
 mod agent;
 mod config;
 mod keepalive;
+mod outbox;
 mod paths;
 mod rcwatch;
 mod suspend;
@@ -120,6 +121,9 @@ enum Cmd {
     /// (internal) Types an order into a window once Claude Code is ready
     #[command(hide = true)]
     Deliver { target: String, text: String },
+    /// (internal) Types a session's queued messages in once it is free
+    #[command(hide = true)]
+    Flush { window: String },
     /// (internal) Waiting screen of a suspended session
     #[command(hide = true)]
     Parked { name: String },
@@ -161,6 +165,7 @@ fn execute(cmd: Cmd) -> Result<()> {
         Cmd::Send { name, text, as_user } => suspend::send(&name, &text, as_user),
         Cmd::Hook(HookCmd::SessionStart) => suspend::session_start_hook(),
         Cmd::Deliver { target, text } => suspend::deliver(&target, &text),
+        Cmd::Flush { window } => suspend::flush(&window),
         Cmd::Kill => kill(),
         Cmd::Edit => edit(),
         Cmd::Doctor => doctor(),
