@@ -53,6 +53,17 @@ fn json_string(s: &str) -> Option<String> {
     None
 }
 
+/// When a transcript of the conversations in `dir` was last written. Only
+/// stats files, so it is cheap enough to run on every session every minute.
+pub fn newest_write(dir: &Path) -> Option<SystemTime> {
+    std::fs::read_dir(project_dir(dir))
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("jsonl"))
+        .filter_map(|e| e.metadata().and_then(|m| m.modified()).ok())
+        .max()
+}
+
 /// The current name of a conversation: the last `custom-title` record in
 /// its transcript, since a `/rename` appends a new one.
 fn title_of(file: &Path) -> Option<String> {

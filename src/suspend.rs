@@ -83,6 +83,18 @@ fn tool_shells(pid: u32) -> usize {
     count
 }
 
+/// Whether the session was used in the last `secs`, judged cheaply: its
+/// claude started then, a key was pressed in a tab showing it, or one of its
+/// folder's transcripts was written then. Any of these means it cannot have
+/// been idle that long (a write without a message only errs on the side of
+/// keeping the session).
+fn touched_within(s: &Session, p: &Pane, secs: u64) -> bool {
+    let recent = |t: std::time::SystemTime| t.elapsed().map_or(true, |d| d.as_secs() < secs);
+    started(p).map_or(false, recent)
+        || tmux::last_input(&p.window_id).map_or(false, recent)
+        || transcripts::newest_write(&s.dir).map_or(false, recent)
+}
+
 /// When the pane's current process started.
 fn started(p: &Pane) -> Option<std::time::SystemTime> {
     std::fs::metadata(format!("/proc/{}", p.pid)).and_then(|m| m.modified()).ok()
@@ -395,10 +407,17 @@ pub fn memwatch() -> ! {
             continue;
         }
 
-        // Candidates: running for a while, not busy, most idle first.
+        // Candidates: running for a while, not busy, most idle first. A
+        // session touched more recently than any suspension could need is
+        // left out on a stat alone, before the costly checks, which read
+        // transcripts of hundreds of MB: done on every session every minute,
+        // they kept a core busy, and under memory pressure they hit the disk.
+        let need = if pressed { a.min_idle_minutes * 60 } else { a.idle_minutes * 60 };
         let mut idle: Vec<(u64, Session, Pane)> = farm_of(&cfg)
             .into_iter()
-            .filter(|(s, p)| s.auto_suspend && !is_suspended(p) && age_secs(p) >= 600 && !is_busy(s, p))
+            .filter(|(s, p)| s.auto_suspend && !is_suspended(p) && age_secs(p) >= 600)
+            .filter(|(s, p)| !touched_within(s, p, need))
+            .filter(|(s, p)| !is_busy(s, p))
             .map(|(s, p)| (idle_secs(&s, &p), s, p))
             .collect();
         idle.sort_by(|x, y| y.0.cmp(&x.0));
