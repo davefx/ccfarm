@@ -3,7 +3,11 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn tmux() -> Command {
-    Command::new("tmux")
+    let mut c = Command::new("tmux");
+    // Tests get a server of their own, never the user's farm.
+    #[cfg(test)]
+    c.args(["-L", &format!("ccfarm-test-{}", std::process::id())]);
+    c
 }
 
 pub fn available() -> bool {
@@ -232,6 +236,11 @@ pub fn kill_window(session: &str, window: &str) -> bool {
 /// OOM killer, typically) and starts its original command again. Without
 /// this the window vanishes and every view on it slides onto another
 /// window of the group. A clean exit still closes the window.
+///
+/// The window is closed from a separate tmux client, not by the hook
+/// itself: tmux runs no hooks for what a hook does, so a window closed
+/// inside the hook would not fire the `session-window-changed` that
+/// `pin_view` relies on, and the tab would slide onto another session.
 pub fn respawn_on_kill(session: &str, window: &str) {
     let Some(id) = window_id(session, window) else { return };
     let _ = run(&["set-option", "-w", "-t", &id, "remain-on-exit", "on"]);
@@ -241,7 +250,7 @@ pub fn respawn_on_kill(session: &str, window: &str) {
         "-t",
         &id,
         "pane-died",
-        "if-shell -F '#{pane_dead_signal}' 'respawn-pane -k' 'kill-pane'",
+        "if-shell -F '#{pane_dead_signal}' 'respawn-pane -k' \"run-shell -b 'tmux -S #{socket_path} kill-pane -t #{pane_id}'\"",
     ]);
 }
 
@@ -327,3 +336,40 @@ pub fn attach_exec(session: &str, takeover: bool) -> ! {
 }
 // Note: tmux sanitizes the output of -F and turns tabs into '_', which is
 // why the field separator is '|' and not a tab.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn wait_until(secs: u64, f: impl Fn() -> bool) -> bool {
+        let end = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < end {
+            if f() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    }
+
+    /// A session that exits cleanly closes its window, and the tab
+    /// viewing it must let go instead of sliding onto another window.
+    #[test]
+    fn view_lets_go_when_its_window_exits_cleanly() {
+        let tmp = std::env::temp_dir();
+        new_session_detached("farm", "other", &tmp, "sleep 60").unwrap();
+        new_window("farm", "short", &tmp, "sleep 1").unwrap();
+        respawn_on_kill("farm", "short");
+        let id = window_id("farm", "short").unwrap();
+        new_grouped_session("farm", "view-short").unwrap();
+        assert!(select_window("view-short", "short"));
+        pin_view("view-short", &id);
+
+        let gone = wait_until(10, || window_id("farm", "short").is_none());
+        let lost = wait_until(3, || view_lost("view-short"));
+        let _ = run(&["kill-server"]);
+        assert!(gone, "the window should close on a clean exit");
+        assert!(lost, "the view should notice its window is gone");
+    }
+}
