@@ -624,10 +624,47 @@ pub fn flush(window: &str) -> Result<()> {
     }
 }
 
+/// Whether `text`, typed into the session, is still sitting in its input
+/// box instead of having been submitted: the input box is the last block
+/// framed by two '─' rules whose first line starts with '❯'. A long text
+/// may show there collapsed, as "[Pasted text …]".
+fn unsent(screen: &str, text: &str) -> bool {
+    let lines: Vec<&str> = screen.lines().collect();
+    let Some(top) = (0..lines.len().saturating_sub(1))
+        .rev()
+        .find(|&i| lines[i].starts_with('─') && lines[i + 1].starts_with('❯'))
+    else {
+        return false;
+    };
+    let input: String = lines[top + 1..]
+        .iter()
+        .take_while(|l| !l.starts_with('─'))
+        .map(|l| l.trim_start_matches('❯').trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if input.contains("[Pasted text") {
+        return true;
+    }
+    // Its first words are enough, and survive the box's line wrapping.
+    let head: String = text.split_whitespace().take(6).collect::<Vec<_>>().join(" ");
+    !head.is_empty() && input.split_whitespace().collect::<Vec<_>>().join(" ").contains(&head)
+}
+
+/// Types `text` and submits it. Claude Code takes a moment to absorb a
+/// long text (it treats it as a paste), and an Enter sent meanwhile is
+/// lost: so Enter is sent again until the text has left the input box.
 fn type_in(target: &str, text: &str) -> Result<()> {
     tmux::send_literal(target, &text.replace(['\r', '\n'], " "))?;
-    std::thread::sleep(Duration::from_millis(300));
-    tmux::send_enter(target)
+    std::thread::sleep(Duration::from_millis(300 + (text.len() as u64 / 10).min(1200)));
+    tmux::send_enter(target)?;
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(800));
+        match tmux::capture_pane(target, 0) {
+            Some(screen) if unsent(&screen, text) => tmux::send_enter(target)?,
+            _ => return Ok(()),
+        }
+    }
+    Ok(())
 }
 
 /// `ccfarm hook session-start`: a Claude Code SessionStart hook. In a farm
@@ -703,8 +740,45 @@ pub fn parked(name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::unsent;
+
     #[test]
     fn mib_rounds_down() {
         assert_eq!(super::mib(2048 + 1000), "2 MB");
+    }
+
+    const BAR: &str = "────────────────────────────────────────";
+
+    fn screen(input: &[&str]) -> String {
+        let mut v = vec!["● Hecho.", "", "✻ Brewed for 3s", "", BAR];
+        v.extend_from_slice(input);
+        v.extend_from_slice(&[BAR, "  ⏵⏵ auto mode on (shift+tab to cycle)"]);
+        v.join("\n")
+    }
+
+    #[test]
+    fn typed_message_left_in_the_box_is_unsent() {
+        let msg = "[ccfarm: message from the session \"Wareferry\", not from the user] hola qué tal";
+        let s = screen(&["❯ [ccfarm: message from the session \"Wareferry\", not from the user] hola", "  qué tal"]);
+        assert!(unsent(&s, msg));
+    }
+
+    #[test]
+    fn collapsed_paste_left_in_the_box_is_unsent() {
+        let s = screen(&["❯ [Pasted text #1 +12 lines]"]);
+        assert!(unsent(&s, "un mensaje muy largo"));
+    }
+
+    #[test]
+    fn empty_box_or_placeholder_is_sent() {
+        assert!(!unsent(&screen(&["❯ "]), "hola qué tal"));
+        assert!(!unsent(&screen(&["❯ Try \"create a util logging.py that…\""]), "hola qué tal"));
+    }
+
+    #[test]
+    fn message_in_the_history_above_is_sent() {
+        let msg = "hola qué tal, esto ya se envió";
+        let s = format!("❯ {}\n\n● Respuesta\n{}", msg, screen(&["❯ "]));
+        assert!(!unsent(&s, msg));
     }
 }
