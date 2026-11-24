@@ -610,6 +610,14 @@ pub fn flush(window: &str) -> Result<()> {
             std::thread::sleep(Duration::from_millis(500));
             continue;
         }
+        // Not while the user is typing there: keys would interleave.
+        if tmux::last_input(&p.window_id)
+            .and_then(|t| t.elapsed().ok())
+            .map_or(false, |e| e < Duration::from_secs(4))
+        {
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
         let Ok(text) = std::fs::read_to_string(msg) else {
             let _ = std::fs::remove_file(msg);
             continue;
@@ -650,18 +658,92 @@ fn unsent(screen: &str, text: &str) -> bool {
     !head.is_empty() && input.split_whitespace().collect::<Vec<_>>().join(" ").contains(&head)
 }
 
+/// A line of `capture-pane -e` output as (all of its visible text, the
+/// part of it not drawn dim). Claude Code draws its placeholder dim.
+fn visible(line: &str) -> (String, String) {
+    let (mut all, mut bright, mut dim) = (String::new(), String::new(), false);
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            all.push(c);
+            if !dim {
+                bright.push(c);
+            }
+            continue;
+        }
+        if chars.next() != Some('[') {
+            continue;
+        }
+        let mut params = String::new();
+        for c in chars.by_ref() {
+            if c.is_ascii_alphabetic() {
+                if c == 'm' {
+                    for p in params.split(';') {
+                        match p {
+                            "2" => dim = true,
+                            "" | "0" | "22" => dim = false,
+                            _ => {}
+                        }
+                    }
+                }
+                break;
+            }
+            params.push(c);
+        }
+    }
+    (all, bright)
+}
+
+/// Whether the user has a draft in the input box: anything typed there,
+/// not counting the dim placeholder. `screen` is `capture-pane -e` output.
+fn draft(screen: &str) -> bool {
+    let lines: Vec<(String, String)> = screen.lines().map(visible).collect();
+    let Some(top) = (0..lines.len().saturating_sub(1))
+        .rev()
+        .find(|&i| lines[i].0.starts_with('─') && lines[i + 1].0.starts_with('❯'))
+    else {
+        return false;
+    };
+    lines[top + 1..]
+        .iter()
+        .take_while(|(all, _)| !all.starts_with('─'))
+        .any(|(_, bright)| !bright.trim_start_matches('❯').trim().is_empty())
+}
+
 /// Types `text` and submits it. Claude Code takes a moment to absorb a
 /// long text (it treats it as a paste), and an Enter sent meanwhile is
 /// lost: so Enter is sent again until the text has left the input box.
+///
+/// A draft the user has in the box is set aside first with Claude Code's
+/// stash (Ctrl+S), which puts it back by itself once the message is sent;
+/// otherwise the message would be typed into the middle of it.
 fn type_in(target: &str, text: &str) -> Result<()> {
+    if tmux::capture_pane_escaped(target).map_or(false, |s| draft(&s)) {
+        tmux::send_key(target, "C-s")?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while tmux::capture_pane_escaped(target).map_or(true, |s| draft(&s)) {
+            if Instant::now() > deadline {
+                bail!("could not set the user's draft aside");
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
     tmux::send_literal(target, &text.replace(['\r', '\n'], " "))?;
     std::thread::sleep(Duration::from_millis(300 + (text.len() as u64 / 10).min(1200)));
     tmux::send_enter(target)?;
-    for _ in 0..5 {
-        std::thread::sleep(Duration::from_millis(800));
+    // Enter again only when the text is plainly still waiting: in the box
+    // on two looks in a row. A stray Enter after the message went through
+    // would send the user's draft, which Claude Code puts back at once.
+    let mut seen = 0;
+    for _ in 0..12 {
+        std::thread::sleep(Duration::from_millis(500));
         match tmux::capture_pane(target, 0) {
-            Some(screen) if unsent(&screen, text) => tmux::send_enter(target)?,
+            Some(screen) if unsent(&screen, text) => seen += 1,
             _ => return Ok(()),
+        }
+        if seen == 2 {
+            tmux::send_enter(target)?;
+            seen = 0;
         }
     }
     Ok(())
@@ -773,6 +855,28 @@ mod tests {
     fn empty_box_or_placeholder_is_sent() {
         assert!(!unsent(&screen(&["❯ "]), "hola qué tal"));
         assert!(!unsent(&screen(&["❯ Try \"create a util logging.py that…\""]), "hola qué tal"));
+    }
+
+    // Input boxes as `capture-pane -e` shows them: the placeholder is dim.
+    fn boxed(line: &str) -> String {
+        format!("● Hecho.\n{}\n{}\n{}\n  ⏵⏵ auto mode on", BAR, line, BAR)
+    }
+
+    #[test]
+    fn typed_text_is_a_draft() {
+        assert!(super::draft(&boxed("\x1b[39m❯\u{a0}\x1b[39mborrador del usuario a medias")));
+    }
+
+    #[test]
+    fn empty_box_or_dim_placeholder_is_no_draft() {
+        assert!(!super::draft(&boxed("\x1b[39m❯\u{a0}")));
+        assert!(!super::draft(&boxed("\x1b[39m❯\u{a0}\x1b[2mTry \"fix typecheck errors\"\x1b[0m")));
+    }
+
+    #[test]
+    fn draft_on_a_second_line_counts() {
+        let s = format!("{}\n\x1b[39m❯\u{a0}\n  segunda línea\n{}\n", BAR, BAR);
+        assert!(super::draft(&s));
     }
 
     #[test]

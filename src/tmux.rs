@@ -3,6 +3,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn tmux() -> Command {
+    #[allow(unused_mut)]
     let mut c = Command::new("tmux");
     // Tests get a server of their own, never the user's farm.
     #[cfg(test)]
@@ -170,6 +171,16 @@ pub fn last_input(window_id: &str) -> Option<std::time::SystemTime> {
 
 pub fn capture_pane(pane: &str, lines: u32) -> Option<String> {
     run(&["capture-pane", "-p", "-t", pane, "-S", &format!("-{}", lines)]).ok()
+}
+
+/// The visible screen with its colours and attributes, as escape codes.
+pub fn capture_pane_escaped(pane: &str) -> Option<String> {
+    run(&["capture-pane", "-p", "-e", "-t", pane]).ok()
+}
+
+/// One key, by tmux name ("C-s", "Enter").
+pub fn send_key(pane: &str, key: &str) -> Result<()> {
+    run(&["send-keys", "-t", pane, key]).map(|_| ())
 }
 
 pub fn send_keys(pane: &str, text: &str) {
